@@ -10,13 +10,13 @@ let bootstrap = DaemonBootstrap()
 do {
     try bootstrap.start()
 } catch {
-    // Fail-closed: if protection could not be raised, do NOT keep running without rules.
-    // First try an emergency block-all lockdown so the machine is closed (no internet)
-    // rather than left open during the restart window. Then exit so launchd (KeepAlive)
-    // restarts the daemon and retries full startup (launchd throttles restarts).
+    // Exit so launchd (KeepAlive) restarts the daemon and retries full startup.
+    // We deliberately do NOT force a block-all here: the user must never end up with no
+    // internet and no way to turn protection off without Terminal. A failed start leaves
+    // PF in its prior state (off on a cold first boot), which is recoverable; an automatic
+    // lockdown could strand the user (see docs/review-followups-stage-a.md).
     FileHandle.standardError.write(
-        Data("[\(KillSwitchConfig.daemonLabel)] startup failed, locking down then exiting for restart: \(error)\n".utf8))
-    bootstrap.emergencyLockdown()
+        Data("[\(KillSwitchConfig.daemonLabel)] startup failed, exiting for restart: \(error)\n".utf8))
     exit(EXIT_FAILURE)
 }
 

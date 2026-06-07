@@ -4,7 +4,7 @@ import KillSwitchShared
 
 /// Fake PF engine: records the order of operations without touching the kernel (no-root tests).
 final class FakePF: PFControlling {
-    enum Op: Equatable { case make, load, enable, disable, lockdown, add(String), remove(String) }
+    enum Op: Equatable { case make, load, enable, disable, add(String), remove(String) }
     private(set) var ops: [Op] = []
     var enabled = false
     var lastRuleset = ""
@@ -19,7 +19,6 @@ final class FakePF: PFControlling {
     func load(_ ruleset: String) throws { ops.append(.load) }
     func enable() throws { ops.append(.enable); enabled = true }
     func disable() throws { ops.append(.disable); enabled = false }
-    func lockdown() throws { ops.append(.lockdown); enabled = true }
     func addServer(_ address: String) throws { ops.append(.add(address)) }
     func removeServer(_ address: String) throws { ops.append(.remove(address)) }
     func isPFEnabled() -> Bool { enabled }
@@ -85,13 +84,5 @@ final class DaemonBootstrapTests: XCTestCase {
         XCTAssertThrowsError(try DaemonBootstrap(store: store, pf: pf, log: { _ in }).start())
         XCTAssertFalse(pf.ops.contains(.enable), "on a generation error the firewall is not enabled")
         XCTAssertFalse(pf.enabled)
-    }
-
-    /// Emergency lockdown blocks everything (fail-closed) when normal startup failed.
-    func testEmergencyLockdownBlocksEverything() throws {
-        let pf = FakePF()
-        DaemonBootstrap(store: StateStore(directory: tempDir), pf: pf, log: { _ in }).emergencyLockdown()
-        XCTAssertTrue(pf.ops.contains(.lockdown), "lockdown applies a block-all ruleset and enables PF")
-        XCTAssertTrue(pf.enabled, "after a startup failure the machine is closed, not left open")
     }
 }

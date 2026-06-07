@@ -8,7 +8,6 @@ public protocol PFControlling {
     func load(_ ruleset: String) throws
     func enable() throws
     func disable() throws
-    func lockdown() throws
     func addServer(_ address: String) throws
     func removeServer(_ address: String) throws
     func isPFEnabled() -> Bool
@@ -57,18 +56,6 @@ public final class DaemonBootstrap {
             }
         }
         log("Protection enabled at startup: \(state.servers.count) server(s), LAN \(state.lanAllowed ? "on" : "off")")
-    }
-
-    /// Best-effort fail-closed lockdown when normal startup fails: block everything so the
-    /// machine is closed (no internet) rather than open, before the process exits and
-    /// launchd retries full startup.
-    public func emergencyLockdown() {
-        do {
-            try pf.lockdown()
-            log("Emergency lockdown applied: all traffic blocked after a startup failure")
-        } catch {
-            log("Emergency lockdown also failed: \(error)")
-        }
     }
 
     public static let defaultLog: (String) -> Void = { message in

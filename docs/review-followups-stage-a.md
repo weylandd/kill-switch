@@ -4,6 +4,24 @@ From the multi-agent code review of Stage A (U1–U4) on 2026-06-07. These were
 deliberately deferred (not bugs blocking Stage A, or needing root/real-machine
 verification, or belonging to a later unit). Listed so they aren't forgotten.
 
+## Deliberate decision: NO automatic block-all on failure
+
+The review suggested an "emergency lockdown" (force block-all + enable PF if startup
+fails) to avoid a fail-open window. **This was tried and removed by user decision.**
+Reason: PF rules persist in the kernel after the daemon dies, so an automatic block-all
+during a crash/glitch could leave the user with no internet AND no Terminal-free way to
+turn it off (the app can't reach a dead daemon; disabling the daemon in System Settings
+stops the process but does not remove its rules). That violates the hard requirement that
+the user can ALWAYS disable protection. On startup failure the daemon now just exits and
+launchd retries; PF stays in its prior state (off on a cold first boot — recoverable).
+
+The real safety net is the OFF switch, which must keep working even when the daemon is
+glitchy. Make sure of this in U7/U8:
+- App disarm command removes/disables the PF rules (U7 XPC).
+- The daemon should drop its PF rules when it is stopped/uninstalled (handle SIGTERM), so
+  "System Settings → Login Items → toggle off" actually restores the internet, not just
+  stops the process. Verify this end-to-end.
+
 ## Must verify on the real machine (with root) before trusting protection
 
 - **Apple anchor egress / R19 preservation — HIGHEST PRIORITY.**

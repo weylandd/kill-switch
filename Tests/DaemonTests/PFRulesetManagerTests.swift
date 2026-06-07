@@ -32,15 +32,6 @@ final class PFRulesetManagerTests: XCTestCase {
                           "IPv6 must be blocked before the utun pass, or IPv6 leaks inside the tunnel")
     }
 
-    /// The minimal lockdown ruleset is itself a valid-looking default-deny that ends with a newline.
-    func testLockdownRulesetIsDefaultDeny() {
-        let r = PFRulesetManager.minimalLockdownRuleset
-        XCTAssertTrue(r.contains("block in all"))
-        XCTAssertTrue(r.contains("block out all"))
-        XCTAssertTrue(r.contains("block quick inet6 all"))
-        XCTAssertTrue(r.hasSuffix("\n"), "must end with a newline (pfctl requirement)")
-    }
-
     /// Covers AE7: trust any utun, regardless of which ones are active.
     func testTrustsAnyUtunInterface() {
         let r = PFRulesetManager.makeRuleset(serverAddresses: ["89.106.86.61"], lanAllowed: false)

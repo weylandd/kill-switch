@@ -125,24 +125,6 @@ public final class PFRulesetManager {
         try runTolerating(pfctlPath, ["-d"], allowing: ["already disabled", "pf disabled", "pf not enabled"])
     }
 
-    /// Apply a minimal hardcoded block-all ruleset and enable PF. Used as the fail-closed
-    /// panic path when normal startup fails: blocking everything (no internet) is the safe
-    /// state, far better than leaving the firewall off (real IP exposed).
-    public func lockdown() throws {
-        try load(Self.minimalLockdownRuleset)
-        try enable()
-    }
-
-    /// The smallest possible default-deny ruleset, independent of any state.
-    static let minimalLockdownRuleset = """
-    set block-policy drop
-    set skip on lo0
-    block in all
-    block out all
-    block quick inet6 all
-
-    """
-
     /// Add a server to the table on the fly (no full reload). Idempotent.
     public func addServer(_ address: String) throws {
         guard Self.isValidIPv4(address) else { throw PFError.invalidAddress(address) }
