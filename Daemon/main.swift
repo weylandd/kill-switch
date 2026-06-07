@@ -13,7 +13,12 @@ let store = StateStore()
 let pf = PFRulesetManager()
 let observer = ConnectionObserver()
 
-let bootstrap = DaemonBootstrap(store: store, pf: pf)
+// Local-only event journal (U9, R21). Routed as the `log:` sink for the components below so key
+// actions (startup, protection on/off, server add/remove, watchdog reinstalls) are recorded.
+let eventLog = EventLog()
+let journal: (String) -> Void = { eventLog.record($0) }
+
+let bootstrap = DaemonBootstrap(store: store, pf: pf, log: journal)
 do {
     try bootstrap.start()
 } catch {
@@ -29,14 +34,14 @@ do {
 
 // Keep protection from silently staying down if PF is disabled or the rules are flushed (U5).
 // It reads the persisted state on every check, so it never fights an explicit disarm.
-let watchdog = Watchdog(pf: pf, stateProvider: { store.load() })
+let watchdog = Watchdog(pf: pf, stateProvider: { store.load() }, log: journal)
 watchdog.start()
 
 // Watch for direct outbound attempts so the app can offer new servers for approval (U6).
 observer.start()
 
 // Serve the menu-bar app: status, allow/remove server, protection on/off, LAN toggle (U7).
-let handler = CommandHandler(store: store, pf: pf, candidates: observer)
+let handler = CommandHandler(store: store, pf: pf, candidates: observer, log: journal)
 let xpc = XPCService(handler: handler)
 xpc.resume()
 
