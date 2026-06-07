@@ -1,0 +1,96 @@
+# Описание Xcode-проекта для XcodeGen.
+# Это «источник истины». Сам файл KillSwitch.xcodeproj генерируется командой:
+#   xcodegen generate
+# и не хранится в git (см. .gitignore).
+
+name: KillSwitch
+
+options:
+  bundleIdPrefix: com.killswitch
+  deploymentTarget:
+    macOS: "13.0"            # SMAppService и MenuBarExtra требуют macOS 13+
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+# Общие настройки сборки для всех таргетов.
+settings:
+  base:
+    SWIFT_VERSION: "5.0"            # язык Swift 5 — меньше борьбы с строгой конкурентностью на MVP
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"         # ad-hoc подпись: собирается локально без команды разработчика
+    DEVELOPMENT_TEAM: ""
+    ENABLE_HARDENED_RUNTIME: YES
+    ONLY_ACTIVE_ARCH: YES
+
+targets:
+
+  # Общий модуль: типы и контракт XPC, линкуется и в приложение, и в демон.
+  KillSwitchShared:
+    type: library.static
+    platform: macOS
+    sources:
+      - Shared
+    settings:
+      base:
+        PRODUCT_NAME: KillSwitchShared
+        SKIP_INSTALL: YES
+
+  # Привилегированный демон (исполняемый файл командной строки, без бандла).
+  KillSwitchDaemon:
+    type: tool
+    platform: macOS
+    sources:
+      - path: Daemon
+        excludes:
+          - "killswitch.pf.template"
+          - "com.killswitch.daemon.plist"
+    dependencies:
+      - target: KillSwitchShared
+    settings:
+      base:
+        PRODUCT_NAME: com.killswitch.daemon
+        PRODUCT_BUNDLE_IDENTIFIER: com.killswitch.daemon
+        GENERATE_INFOPLIST_FILE: YES
+        CREATE_INFOPLIST_SECTION_IN_BINARY: YES
+
+  # Приложение в строке меню — тонкий пульт поверх демона.
+  KillSwitch:
+    type: application
+    platform: macOS
+    sources:
+      - App
+    dependencies:
+      - target: KillSwitchShared
+      # Демон нужен только как зависимость порядка сборки (собрать раньше приложения).
+      # Само встраивание в бандл делает postBuildScript ниже — XcodeGen для tool-таргета
+      # кладёт его в Resources, а нам нужен Contents/MacOS (конвенция SMAppService).
+      - target: KillSwitchDaemon
+        embed: false
+        link: false
+    postBuildScripts:
+      - name: Встроить демон в Contents/MacOS
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          SRC="${BUILT_PRODUCTS_DIR}/com.killswitch.daemon"
+          DEST="${BUILT_PRODUCTS_DIR}/${EXECUTABLE_FOLDER_PATH}"
+          mkdir -p "${DEST}"
+          ditto "${SRC}" "${DEST}/com.killswitch.daemon"
+    settings:
+      base:
+        PRODUCT_NAME: KillSwitch
+        PRODUCT_BUNDLE_IDENTIFIER: com.killswitch.app
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSUIElement: YES      # приложение-агент: только в строке меню, без иконки в доке
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+
+schemes:
+  KillSwitch:
+    build:
+      targets:
+        KillSwitch: all
+        KillSwitchDaemon: all
+    run:
+      config: Debug

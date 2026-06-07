@@ -1,0 +1,13 @@
+.compound-engineering/*.local.yaml
+
+# Xcode-проект генерируется из project.yml через XcodeGen — в git не храним.
+*.xcodeproj
+
+# Сборка и служебные файлы Xcode/Swift
+build/
+DerivedData/
+.build/
+.swiftpm/
+*.xcuserstate
+xcuserdata/
+.DS_Store
