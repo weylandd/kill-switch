@@ -1,12 +1,19 @@
 import Foundation
 import KillSwitchShared
+import KillSwitchDaemonCore
 
-// Привилегированный демон. Этап A / U1 — заглушка: процесс запускается и живёт.
-// Реальная последовательность старта (загрузить состояние → собрать правила PF →
-// включить фаервол) добавляется в U4; хранилище — U2, движок правил — U3.
+// Привилегированный демон. На старте поднимает защиту из сохранённого состояния
+// (U4): загрузить состояние → собрать правила default-deny → включить фаервол.
+// XPC-сервис для связи с приложением подключится в U7; watchdog — U5.
 
-FileHandle.standardError.write(Data("[\(KillSwitchConfig.daemonLabel)] запущен (каркас, этап A)\n".utf8))
+let bootstrap = DaemonBootstrap()
+do {
+    try bootstrap.start()
+} catch {
+    // Не молчим: при KeepAlive launchd перезапустит демон, и старт повторится.
+    FileHandle.standardError.write(
+        Data("[\(KillSwitchConfig.daemonLabel)] ОШИБКА старта защиты: \(error)\n".utf8))
+}
 
-// Демон — долгоживущий процесс под управлением launchd. Держим runloop,
-// иначе launchd сочтёт его упавшим и (при KeepAlive) перезапустит.
+// Демон — долгоживущий процесс под launchd. Держим runloop.
 RunLoop.main.run()

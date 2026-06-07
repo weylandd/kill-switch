@@ -102,14 +102,20 @@ targets:
         embed: false
         link: false
     postBuildScripts:
-      - name: Встроить демон в Contents/MacOS
+      - name: Встроить демон и launchd-plist в бандл
         basedOnDependencyAnalysis: false
         script: |
           set -e
+          # Исполняемый файл демона → Contents/MacOS (конвенция SMAppService).
           SRC="${BUILT_PRODUCTS_DIR}/com.killswitch.daemon"
-          DEST="${BUILT_PRODUCTS_DIR}/${EXECUTABLE_FOLDER_PATH}"
-          mkdir -p "${DEST}"
-          ditto "${SRC}" "${DEST}/com.killswitch.daemon"
+          DEST_BIN="${BUILT_PRODUCTS_DIR}/${EXECUTABLE_FOLDER_PATH}"
+          mkdir -p "${DEST_BIN}"
+          ditto "${SRC}" "${DEST_BIN}/com.killswitch.daemon"
+          # launchd-plist → Contents/Library/LaunchDaemons (требование SMAppService.daemon).
+          PLIST_SRC="${SRCROOT}/Daemon/com.killswitch.daemon.plist"
+          DEST_PLIST="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Library/LaunchDaemons"
+          mkdir -p "${DEST_PLIST}"
+          ditto "${PLIST_SRC}" "${DEST_PLIST}/com.killswitch.daemon.plist"
     settings:
       base:
         PRODUCT_NAME: KillSwitch
