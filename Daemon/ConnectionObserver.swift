@@ -71,11 +71,19 @@ public protocol InterfaceInspecting {
     func tunnelLocalAddresses() -> Set<String>
 }
 
+/// What the command layer (U7) needs from the observer: the candidate list and whether an
+/// allowed server is currently connected (for the "tunnel up" status). A protocol so the
+/// command handler can be tested with a fake.
+public protocol CandidateProviding {
+    func candidates(allowedServers: Set<String>, now: Date) -> [Candidate]
+    func recentlyConnectedServers(among allowed: Set<String>, within: TimeInterval, now: Date) -> Set<String>
+}
+
 /// Watches direct outbound connection attempts and builds the approval-candidate list (R7, R9,
 /// R22, R23). The decision logic (`AddressRules`, `selectCandidates`) is pure and tested; the
 /// system access (libproc, getifaddrs) lives behind `SocketScanning`/`InterfaceInspecting` and
 /// needs real-machine verification.
-public final class ConnectionObserver {
+public final class ConnectionObserver: CandidateProviding {
     private let scanner: SocketScanning
     private let inspector: InterfaceInspecting
     private let window: TimeInterval          // "all attempts in the last N seconds" arm (R22)
@@ -139,6 +147,18 @@ public final class ConnectionObserver {
         prune(now: now)
         return Self.selectCandidates(samples: buffer, allowedServers: allowedServers, now: now,
                                      recentProcessLimit: recentProcessLimit, window: window)
+    }
+
+    /// Which of the allowed servers we have seen a direct connection to within `within` seconds —
+    /// i.e. the VPN transport is actually up (drives the "tunnel up" vs "tunnel down (safe)" icon).
+    public func recentlyConnectedServers(among allowed: Set<String>, within: TimeInterval,
+                                         now: Date = Date()) -> Set<String> {
+        lock.lock(); defer { lock.unlock() }
+        var result = Set<String>()
+        for s in buffer where allowed.contains(s.address) && now.timeIntervalSince(s.seenAt) <= within {
+            result.insert(s.address)
+        }
+        return result
     }
 
     // MARK: - Pure logic

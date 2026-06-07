@@ -3,10 +3,17 @@ import KillSwitchShared
 import KillSwitchDaemonCore
 
 // The privileged daemon. At startup it raises protection from the persisted state (U4):
-// load state -> build the default-deny ruleset -> enable the firewall.
-// The XPC service for talking to the app is wired up in U7.
+// load state -> build the default-deny ruleset -> enable the firewall. It then keeps that
+// protection up (watchdog, U5), watches for new servers (observer, U6), and serves the app
+// over XPC (U7).
 
-let bootstrap = DaemonBootstrap()
+// Shared collaborators — one StateStore (its lock serializes writes) and one PF engine across
+// bootstrap, watchdog and the command handler.
+let store = StateStore()
+let pf = PFRulesetManager()
+let observer = ConnectionObserver()
+
+let bootstrap = DaemonBootstrap(store: store, pf: pf)
 do {
     try bootstrap.start()
 } catch {
@@ -22,13 +29,30 @@ do {
 
 // Keep protection from silently staying down if PF is disabled or the rules are flushed (U5).
 // It reads the persisted state on every check, so it never fights an explicit disarm.
-let watchdog = Watchdog(pf: PFRulesetManager(), stateProvider: { StateStore().load() })
+let watchdog = Watchdog(pf: pf, stateProvider: { store.load() })
 watchdog.start()
 
 // Watch for direct outbound attempts so the app can offer new servers for approval (U6).
-// The XPC layer (U7) reads its candidate list on demand.
-let observer = ConnectionObserver()
 observer.start()
+
+// Serve the menu-bar app: status, allow/remove server, protection on/off, LAN toggle (U7).
+let handler = CommandHandler(store: store, pf: pf, candidates: observer)
+let xpc = XPCService(handler: handler)
+xpc.resume()
+
+// Guaranteed escape hatch (KTD7): when the daemon is told to stop — e.g. the user toggles it off
+// in System Settings → Login Items, or the system unloads it — drop the firewall so the internet
+// is restored. Otherwise the PF rules would persist in the kernel with no daemon left to disarm
+// them, stranding the user. We accept the small fail-open window this opens on a restart; the
+// user explicitly prefers fail-open over any lockout risk.
+let sigterm = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+sigterm.setEventHandler {
+    try? pf.disable()
+    FileHandle.standardError.write(Data("[\(KillSwitchConfig.daemonLabel)] SIGTERM — disabled PF, exiting\n".utf8))
+    exit(EXIT_SUCCESS)
+}
+sigterm.resume()
+signal(SIGTERM, SIG_IGN)   // let the dispatch source handle it instead of the default action
 
 // The daemon is a long-lived process under launchd. Keep the runloop alive.
 RunLoop.main.run()
