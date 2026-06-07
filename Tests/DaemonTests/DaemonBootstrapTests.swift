@@ -2,13 +2,13 @@ import XCTest
 @testable import KillSwitchDaemonCore
 import KillSwitchShared
 
-/// Фейк движка PF: записывает порядок операций, не трогая ядро (тесты без root).
+/// Fake PF engine: records the order of operations without touching the kernel (no-root tests).
 final class FakePF: PFControlling {
     enum Op: Equatable { case make, load, enable, disable, add(String), remove(String) }
     private(set) var ops: [Op] = []
     var enabled = false
     var lastRuleset = ""
-    var failMake = false   // если true — makeRuleset бросает (имитация невалидного состояния)
+    var failMake = false   // if true, makeRuleset throws (simulates an invalid state)
 
     func makeRuleset(from state: PersistedState) throws -> String {
         ops.append(.make)
@@ -38,8 +38,7 @@ final class DaemonBootstrapTests: XCTestCase {
         try? FileManager.default.removeItem(at: tempDir)
     }
 
-    /// Covers AE1: состояние читается первым, правила (default-deny) загружаются
-    /// ДО включения PF.
+    /// Covers AE1: state is read first; the rules (default-deny) load BEFORE PF is enabled.
     func testStartLoadsRulesBeforeEnabling() throws {
         let store = StateStore(directory: tempDir)
         try store.save(PersistedState(servers: [ServerRule(address: "89.106.86.61", label: "v2RayTun")]))
@@ -47,24 +46,24 @@ final class DaemonBootstrapTests: XCTestCase {
 
         try DaemonBootstrap(store: store, pf: pf, log: { _ in }).start()
 
-        XCTAssertEqual(pf.ops, [.make, .load, .enable], "порядок: собрать → загрузить → включить")
+        XCTAssertEqual(pf.ops, [.make, .load, .enable], "order: build → load → enable")
         XCTAssertTrue(pf.enabled)
-        XCTAssertTrue(pf.lastRuleset.contains("89.106.86.61"), "сохранённый сервер попал в ruleset")
+        XCTAssertTrue(pf.lastRuleset.contains("89.106.86.61"), "the saved server made it into the ruleset")
     }
 
-    /// edge: пустое состояние — default-deny всё равно загружается и PF включается.
+    /// edge: an empty state still loads default-deny and enables PF.
     func testEmptyStateStillEnablesDefaultDeny() throws {
-        let store = StateStore(directory: tempDir)   // ничего не сохранено
+        let store = StateStore(directory: tempDir)   // nothing saved
         let pf = FakePF()
 
         try DaemonBootstrap(store: store, pf: pf, log: { _ in }).start()
 
         XCTAssertEqual(pf.ops, [.make, .load, .enable])
-        XCTAssertTrue(pf.enabled, "без серверов всё равно default-deny + включён")
+        XCTAssertTrue(pf.enabled, "default-deny + enabled even with no servers")
     }
 
-    /// KTD7: сохранённое «выключено» не переживает перезагрузку — стартуем защищёнными
-    /// и приводим хранилище к «защищён».
+    /// KTD7: a stored "disarmed" flag does not survive a reboot — boot protected and
+    /// bring the store back to "protected".
     func testDisarmedStateBootsProtectedAndResetsFlag() throws {
         let store = StateStore(directory: tempDir)
         try store.save(PersistedState(protectionEnabled: false))
@@ -72,18 +71,18 @@ final class DaemonBootstrapTests: XCTestCase {
 
         try DaemonBootstrap(store: store, pf: pf, log: { _ in }).start()
 
-        XCTAssertTrue(pf.enabled, "после перезагрузки защита включена, не молчаливо открыта")
-        XCTAssertTrue(store.load().protectionEnabled, "сохранённый флаг приведён к «защищён»")
+        XCTAssertTrue(pf.enabled, "after reboot protection is on, not silently open")
+        XCTAssertTrue(store.load().protectionEnabled, "the stored flag is brought back to 'protected'")
     }
 
-    /// При ошибке сборки правил PF не включается (не оставляем частично применённое).
+    /// On a ruleset-build failure, PF is not enabled (no partially-applied state).
     func testRulesetBuildFailureDoesNotEnable() throws {
         let store = StateStore(directory: tempDir)
         let pf = FakePF()
         pf.failMake = true
 
         XCTAssertThrowsError(try DaemonBootstrap(store: store, pf: pf, log: { _ in }).start())
-        XCTAssertFalse(pf.ops.contains(.enable), "при ошибке генерации фаервол не включается")
+        XCTAssertFalse(pf.ops.contains(.enable), "on a generation error the firewall is not enabled")
         XCTAssertFalse(pf.enabled)
     }
 }

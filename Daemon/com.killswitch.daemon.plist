@@ -2,30 +2,30 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Метка демона; совпадает с именем этого файла и с регистрацией SMAppService. -->
+    <!-- Daemon label; matches this file's name and the SMAppService registration. -->
     <key>Label</key>
     <string>com.killswitch.daemon</string>
 
-    <!-- Путь к исполняемому файлу демона внутри бандла приложения (для SMAppService). -->
+    <!-- Path to the daemon executable inside the app bundle (for SMAppService). -->
     <key>BundleProgram</key>
     <string>Contents/MacOS/com.killswitch.daemon</string>
 
-    <!-- Запуск с загрузки системы — защита с первой секунды (R2). -->
+    <!-- Start at boot — protection from the first second (R2). -->
     <key>RunAtLoad</key>
     <true/>
 
-    <!-- Перезапуск, если демон упал/убит (AE5). -->
+    <!-- Restart the daemon if it crashes or is killed (AE5). -->
     <key>KeepAlive</key>
     <true/>
 
-    <!-- Mach-сервис XPC, по которому приложение говорит с демоном (U7). -->
+    <!-- XPC Mach service the app uses to talk to the daemon (U7). -->
     <key>MachServices</key>
     <dict>
         <key>com.killswitch.daemon.xpc</key>
         <true/>
     </dict>
 
-    <!-- Локальный журнал ошибок демона. -->
+    <!-- Local error log for the daemon. -->
     <key>StandardErrorPath</key>
     <string>/var/log/com.killswitch.daemon.log</string>
 </dict>

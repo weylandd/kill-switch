@@ -1,27 +1,27 @@
 import Foundation
 
-/// Контракт связи приложение → демон (через XPC / NSXPCConnection).
-/// Здесь только описание команд; реальное подключение и реализация — в U7.
-/// Сложные данные (статус, список кандидатов) передаются как JSON-`Data`,
-/// чтобы не тащить кодирование моделей в Objective-C-слой XPC.
+/// The app -> daemon communication contract (over XPC / NSXPCConnection).
+/// This only describes the commands; the actual connection and implementation live in U7.
+/// Complex data (status, candidate list) is passed as JSON `Data` to avoid pushing model
+/// encoding into the Objective-C XPC layer.
 @objc public protocol KillSwitchDaemonProtocol {
 
-    /// Текущее состояние демона. reply: JSON `DaemonStatus` или nil при ошибке.
+    /// Current daemon state. reply: JSON `DaemonStatus`, or nil on error.
     func fetchStatus(reply: @escaping (Data?) -> Void)
 
-    /// Список кандидатов на разрешение. reply: JSON `[Candidate]` или nil.
+    /// List of approval candidates. reply: JSON `[Candidate]`, or nil.
     func fetchCandidates(reply: @escaping (Data?) -> Void)
 
-    /// Разрешить сервер по адресу (добавить его /32 в белый список).
-    /// reply: успех + текст ошибки при неудаче.
+    /// Allow a server by address (add its /32 to the whitelist).
+    /// reply: success + error text on failure.
     func allowServer(address: String, label: String, port: Int, reply: @escaping (Bool, String?) -> Void)
 
-    /// Убрать сервер из белого списка.
+    /// Remove a server from the whitelist.
     func removeServer(address: String, reply: @escaping (Bool, String?) -> Void)
 
-    /// Включить (true) или аварийно выключить (false) защиту.
+    /// Enable (true) or emergency-disable (false) protection.
     func setProtection(enabled: Bool, reply: @escaping (Bool, String?) -> Void)
 
-    /// Открыть или закрыть доступ к локальной сети.
+    /// Open or close local-network access.
     func setLANAccess(allowed: Bool, reply: @escaping (Bool, String?) -> Void)
 }

@@ -2,9 +2,9 @@ import Foundation
 import ServiceManagement
 import KillSwitchShared
 
-/// Регистрация привилегированного демона через SMAppService (macOS 13+).
-/// Одно подтверждение пользователя в Системных настройках. Ручная установка plist
-/// в /Library/LaunchDaemons остаётся запасным путём для личного MVP.
+/// Registers the privileged daemon via SMAppService (macOS 13+).
+/// One user approval in System Settings. Manually installing the plist into
+/// /Library/LaunchDaemons remains a fallback path for this personal MVP.
 @available(macOS 13.0, *)
 public enum DaemonRegistration {
 
@@ -13,39 +13,39 @@ public enum DaemonRegistration {
     }
 
     public enum Result {
-        case registered            // зарегистрирован и активен
-        case requiresApproval      // нужно одобрить в Системных настройках
-        case failed(String)        // понятное сообщение об ошибке
+        case registered            // registered and active
+        case requiresApproval      // needs approval in System Settings
+        case failed(String)        // user-readable error message
     }
 
-    /// Зарегистрировать демон. Возвращает результат, пригодный для показа пользователю.
+    /// Register the daemon. Returns a result suitable for showing to the user.
     public static func register() -> Result {
         let svc = service
         do {
             try svc.register()
             return interpret(svc.status)
         } catch {
-            // Частая причина — требуется одобрение пользователя; статус это покажет.
+            // A common cause is that user approval is required; the status reflects it.
             if svc.status == .requiresApproval { return .requiresApproval }
             return .failed(error.localizedDescription)
         }
     }
 
-    /// Снять регистрацию демона.
+    /// Unregister the daemon.
     public static func unregister() -> Result {
         let svc = service
         do {
             try svc.unregister()
-            return .registered   // вызывающий обычно просто обновляет статус
+            return .registered   // the caller typically just refreshes the status
         } catch {
             return .failed(error.localizedDescription)
         }
     }
 
-    /// Текущий статус регистрации.
+    /// Current registration status.
     public static var status: SMAppService.Status { service.status }
 
-    /// Человекочитаемое описание статуса для интерфейса.
+    /// Human-readable status description for the UI (kept in Russian for the end user).
     public static var statusDescription: String {
         switch service.status {
         case .enabled:          return "установлен и активен"
@@ -56,8 +56,8 @@ public enum DaemonRegistration {
         }
     }
 
-    /// Открыть Системные настройки на разделе «Объекты входа и расширения»,
-    /// где пользователь может одобрить или выключить демон (гарантированный путь disarm).
+    /// Open System Settings at "Login Items & Extensions", where the user can approve or
+    /// disable the daemon (the guaranteed disarm path).
     public static func openLoginItemsSettings() {
         SMAppService.openSystemSettingsLoginItems()
     }

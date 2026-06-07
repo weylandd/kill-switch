@@ -1,17 +1,17 @@
 import Foundation
 
-/// Общие идентификаторы и пути, нужные и приложению, и демону.
-/// Вынесено в Shared, чтобы обе стороны использовали одни и те же имена.
+/// Shared identifiers and paths needed by both the app and the daemon.
+/// Kept in Shared so both sides use the exact same names.
 public enum KillSwitchConfig {
-    /// Метка launchd и bundle id демона.
+    /// launchd label and bundle id of the daemon.
     public static let daemonLabel = "com.killswitch.daemon"
 
-    /// Имя plist демона внутри Contents/Library/LaunchDaemons (для SMAppService).
+    /// Name of the daemon plist inside Contents/Library/LaunchDaemons (for SMAppService).
     public static let daemonPlistName = "com.killswitch.daemon.plist"
 
-    /// Имя Mach-сервиса XPC, по которому приложение говорит с демоном (U7).
+    /// Name of the XPC Mach service the app uses to talk to the daemon (U7).
     public static let machServiceName = "com.killswitch.daemon.xpc"
 
-    /// Каталог состояния демона. Доступен только root (создаётся демоном при первом старте).
+    /// Daemon state directory. Root-only (created by the daemon on first start).
     public static let stateDirectory = "/Library/Application Support/KillSwitch"
 }

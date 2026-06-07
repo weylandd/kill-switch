@@ -2,21 +2,21 @@ import Foundation
 import KillSwitchShared
 import KillSwitchDaemonCore
 
-// Привилегированный демон. На старте поднимает защиту из сохранённого состояния
-// (U4): загрузить состояние → собрать правила default-deny → включить фаервол.
-// XPC-сервис для связи с приложением подключится в U7; watchdog — U5.
+// The privileged daemon. At startup it raises protection from the persisted state (U4):
+// load state -> build the default-deny ruleset -> enable the firewall.
+// The XPC service for talking to the app is wired up in U7; the watchdog is U5.
 
 let bootstrap = DaemonBootstrap()
 do {
     try bootstrap.start()
 } catch {
-    // Fail-closed: если защиту поднять не удалось, НЕ остаёмся жить без правил.
-    // Выходим с ошибкой — launchd (KeepAlive) перезапустит демон и повторит попытку
-    // (launchd троттлит рестарты, поэтому плотного цикла не будет).
+    // Fail-closed: if protection could not be raised, do NOT keep running without rules.
+    // Exit with an error so launchd (KeepAlive) restarts the daemon and retries
+    // (launchd throttles restarts, so there is no tight loop).
     FileHandle.standardError.write(
-        Data("[\(KillSwitchConfig.daemonLabel)] ОШИБКА старта защиты, выходим для перезапуска: \(error)\n".utf8))
+        Data("[\(KillSwitchConfig.daemonLabel)] startup failed, exiting for restart: \(error)\n".utf8))
     exit(EXIT_FAILURE)
 }
 
-// Демон — долгоживущий процесс под launchd. Держим runloop.
+// The daemon is a long-lived process under launchd. Keep the runloop alive.
 RunLoop.main.run()

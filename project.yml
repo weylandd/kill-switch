@@ -1,30 +1,30 @@
-# Описание Xcode-проекта для XcodeGen.
-# Это «источник истины». Сам файл KillSwitch.xcodeproj генерируется командой:
+# Xcode project description for XcodeGen.
+# This is the source of truth. The KillSwitch.xcodeproj itself is generated with:
 #   xcodegen generate
-# и не хранится в git (см. .gitignore).
+# and is not stored in git (see .gitignore).
 
 name: KillSwitch
 
 options:
   bundleIdPrefix: com.killswitch
   deploymentTarget:
-    macOS: "13.0"            # SMAppService и MenuBarExtra требуют macOS 13+
+    macOS: "13.0"            # SMAppService and MenuBarExtra require macOS 13+
   createIntermediateGroups: true
   groupSortPosition: top
 
-# Общие настройки сборки для всех таргетов.
+# Shared build settings for all targets.
 settings:
   base:
-    SWIFT_VERSION: "5.0"            # язык Swift 5 — меньше борьбы с строгой конкурентностью на MVP
+    SWIFT_VERSION: "5.0"            # Swift 5 language mode — less fighting strict concurrency on an MVP
     CODE_SIGN_STYLE: Manual
-    CODE_SIGN_IDENTITY: "-"         # ad-hoc подпись: собирается локально без команды разработчика
+    CODE_SIGN_IDENTITY: "-"         # ad-hoc signing: builds locally without a developer team
     DEVELOPMENT_TEAM: ""
     ENABLE_HARDENED_RUNTIME: YES
     ONLY_ACTIVE_ARCH: YES
 
 targets:
 
-  # Общий модуль: типы и контракт XPC, линкуется и в приложение, и в демон.
+  # Shared module: types and the XPC contract, linked into both the app and the daemon.
   KillSwitchShared:
     type: library.static
     platform: macOS
@@ -35,9 +35,9 @@ targets:
         PRODUCT_NAME: KillSwitchShared
         SKIP_INSTALL: YES
 
-  # Логика демона как отдельная библиотека — чтобы её можно было покрыть тестами
-  # (исполняемый файл с main.swift тестировать неудобно). Сюда идут StateStore,
-  # PFRulesetManager, Watchdog, ConnectionObserver и т.п.
+  # Daemon logic as a separate library — so it can be covered by tests (an executable
+  # with main.swift is awkward to test). StateStore, PFRulesetManager, Watchdog,
+  # ConnectionObserver, etc. live here.
   KillSwitchDaemonCore:
     type: library.static
     platform: macOS
@@ -55,10 +55,10 @@ targets:
         SKIP_INSTALL: YES
       configs:
         Debug:
-          ENABLE_TESTABILITY: YES      # для @testable import в тестах
+          ENABLE_TESTABILITY: YES      # for @testable import in tests
 
-  # Привилегированный демон (исполняемый файл командной строки) — тонкая обёртка
-  # над KillSwitchDaemonCore.
+  # The privileged daemon (a command-line executable) — a thin wrapper over
+  # KillSwitchDaemonCore.
   KillSwitchDaemon:
     type: tool
     platform: macOS
@@ -74,7 +74,7 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         CREATE_INFOPLIST_SECTION_IN_BINARY: YES
 
-  # Тесты логики демона (логические тесты, без host-приложения).
+  # Daemon logic tests (logic tests, no host app).
   KillSwitchDaemonTests:
     type: bundle.unit-test
     platform: macOS
@@ -87,7 +87,7 @@ targets:
       base:
         GENERATE_INFOPLIST_FILE: YES
 
-  # Приложение в строке меню — тонкий пульт поверх демона.
+  # The menu-bar app — a thin remote control on top of the daemon.
   KillSwitch:
     type: application
     platform: macOS
@@ -95,23 +95,23 @@ targets:
       - App
     dependencies:
       - target: KillSwitchShared
-      # Демон нужен только как зависимость порядка сборки (собрать раньше приложения).
-      # Само встраивание в бандл делает postBuildScript ниже — XcodeGen для tool-таргета
-      # кладёт его в Resources, а нам нужен Contents/MacOS (конвенция SMAppService).
+      # The daemon is needed only as a build-order dependency (build it before the app).
+      # The actual bundle embedding is done by the postBuildScript below — XcodeGen places
+      # a tool target in Resources, but we need Contents/MacOS (the SMAppService convention).
       - target: KillSwitchDaemon
         embed: false
         link: false
     postBuildScripts:
-      - name: Встроить демон и launchd-plist в бандл
+      - name: Embed daemon and launchd plist into the bundle
         basedOnDependencyAnalysis: false
         script: |
           set -e
-          # Исполняемый файл демона → Contents/MacOS (конвенция SMAppService).
+          # Daemon executable -> Contents/MacOS (SMAppService convention).
           SRC="${BUILT_PRODUCTS_DIR}/com.killswitch.daemon"
           DEST_BIN="${BUILT_PRODUCTS_DIR}/${EXECUTABLE_FOLDER_PATH}"
           mkdir -p "${DEST_BIN}"
           ditto "${SRC}" "${DEST_BIN}/com.killswitch.daemon"
-          # launchd-plist → Contents/Library/LaunchDaemons (требование SMAppService.daemon).
+          # launchd plist -> Contents/Library/LaunchDaemons (required by SMAppService.daemon).
           PLIST_SRC="${SRCROOT}/Daemon/com.killswitch.daemon.plist"
           DEST_PLIST="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Library/LaunchDaemons"
           mkdir -p "${DEST_PLIST}"
@@ -121,7 +121,7 @@ targets:
         PRODUCT_NAME: KillSwitch
         PRODUCT_BUNDLE_IDENTIFIER: com.killswitch.app
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_LSUIElement: YES      # приложение-агент: только в строке меню, без иконки в доке
+        INFOPLIST_KEY_LSUIElement: YES      # agent app: menu bar only, no Dock icon
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
@@ -134,7 +134,7 @@ schemes:
         KillSwitchDaemon: all
     run:
       config: Debug
-  # Схема для прогона тестов: xcodebuild test -scheme KillSwitchTests
+  # Scheme for running tests: xcodebuild test -scheme KillSwitchTests
   KillSwitchTests:
     build:
       targets:

@@ -16,7 +16,7 @@ final class StateStoreTests: XCTestCase {
         try? FileManager.default.removeItem(at: tempDir)
     }
 
-    /// happy path: сохранение и чтение возвращают идентичный набор.
+    /// happy path: save and load return an identical set.
     func testSaveThenLoadRoundTrips() throws {
         let state = PersistedState(
             servers: [
@@ -29,34 +29,34 @@ final class StateStoreTests: XCTestCase {
         )
         try StateStore(directory: tempDir).save(state)
 
-        // Свежий экземпляр = как перезапуск демона.
+        // A fresh instance = like a daemon restart.
         let loaded = StateStore(directory: tempDir).load()
         XCTAssertEqual(loaded, state)
     }
 
-    /// edge: отсутствующее хранилище → безопасные значения по умолчанию.
+    /// edge: a missing store falls back to safe defaults.
     func testMissingStoreReturnsSafeDefaults() {
         let loaded = StateStore(directory: tempDir).load()
         XCTAssertEqual(loaded, .defaults)
-        XCTAssertTrue(loaded.protectionEnabled, "по умолчанию защита включена")
-        XCTAssertFalse(loaded.lanAllowed, "по умолчанию локальная сеть закрыта")
-        XCTAssertTrue(loaded.servers.isEmpty, "по умолчанию серверов нет")
+        XCTAssertTrue(loaded.protectionEnabled, "protection is on by default")
+        XCTAssertFalse(loaded.lanAllowed, "local network is off by default")
+        XCTAssertTrue(loaded.servers.isEmpty, "no servers by default")
     }
 
-    /// error: битый/частично записанный файл → дефолты + запись в журнал, без падения.
+    /// error: a corrupt/partially-written file falls back to defaults + logs, without crashing.
     func testCorruptFileFallsBackToDefaultsAndLogs() throws {
         let fileURL = tempDir.appendingPathComponent("state.json")
-        try Data("{ это не валидный json".utf8).write(to: fileURL)
+        try Data("{ this is not valid json".utf8).write(to: fileURL)
 
         var logged: [String] = []
         let store = StateStore(directory: tempDir, log: { logged.append($0) })
         let loaded = store.load()
 
-        XCTAssertEqual(loaded, .defaults, "повреждённый файл не должен открывать интернет — откат к защищённым дефолтам")
-        XCTAssertFalse(logged.isEmpty, "повреждение должно попадать в журнал")
+        XCTAssertEqual(loaded, .defaults, "a corrupt file must not open the internet — fall back to protected defaults")
+        XCTAssertFalse(logged.isEmpty, "corruption should be logged")
     }
 
-    /// edge: конкурентная запись не оставляет файл в полуразрушенном виде.
+    /// edge: concurrent writes never leave a half-written file.
     func testConcurrentSavesLeaveDecodableFile() throws {
         let store = StateStore(directory: tempDir)
         let group = DispatchGroup()
@@ -76,13 +76,13 @@ final class StateStoreTests: XCTestCase {
         }
         group.wait()
 
-        // Файл должен декодироваться целиком (не полуразрушен) и быть одним из записанных.
+        // The file must decode fully (not half-written) and be one of the saved states.
         let loaded = store.load()
-        XCTAssertEqual(loaded.servers.count, 1, "файл цел и содержит одно из записанных состояний")
-        XCTAssertNotEqual(loaded, .defaults, "что-то записалось — это не дефолтный пустой результат")
+        XCTAssertEqual(loaded.servers.count, 1, "file is intact and holds one of the saved states")
+        XCTAssertNotEqual(loaded, .defaults, "something was saved — this is not the empty default result")
     }
 
-    /// Сохранение создаёт каталог, если его не было.
+    /// Saving creates the directory if it did not exist.
     func testSaveCreatesMissingDirectory() throws {
         let nested = tempDir.appendingPathComponent("nested/state-dir")
         let store = StateStore(directory: nested)

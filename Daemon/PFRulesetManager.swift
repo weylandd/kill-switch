@@ -1,7 +1,7 @@
 import Foundation
 import KillSwitchShared
 
-/// Ошибки движка правил PF.
+/// Errors from the PF ruleset engine.
 public enum PFError: Error, CustomStringConvertible {
     case invalidAddress(String)
     case commandFailed(command: String, status: Int32, output: String)
@@ -9,22 +9,22 @@ public enum PFError: Error, CustomStringConvertible {
     public var description: String {
         switch self {
         case .invalidAddress(let a):
-            return "Невалидный адрес сервера: \(a)"
+            return "Invalid server address: \(a)"
         case .commandFailed(let cmd, let status, let output):
-            return "Команда не выполнена (код \(status)): \(cmd)\n\(output)"
+            return "Command failed (code \(status)): \(cmd)\n\(output)"
         }
     }
 }
 
-/// Генерирует, проверяет и применяет managed-ruleset фаервола PF, а также
-/// обновляет таблицу разрешённых серверов на лету.
+/// Generates, validates, and applies the managed PF firewall ruleset, and updates the
+/// allowed-servers table on the fly.
 ///
-/// Ruleset собирается кодом (не читается из внешнего файла) намеренно: фаервол
-/// работает в режиме «по умолчанию блокировать», и зависимость от внешнего файла,
-/// который может не найтись, означала бы риск остаться без правил, то есть без защиты.
+/// The ruleset is built in code (not read from an external file) deliberately: the
+/// firewall runs in default-deny mode, and depending on an external file that might be
+/// missing would risk having no rules — i.e. no protection.
 public final class PFRulesetManager {
 
-    /// Путь, куда демон пишет активный ruleset (root-owned).
+    /// Path where the daemon writes the active ruleset (root-owned).
     public let rulesetURL: URL
     private let pfctlPath: String
 
@@ -34,10 +34,10 @@ public final class PFRulesetManager {
         self.pfctlPath = pfctlPath
     }
 
-    // MARK: - Генерация ruleset (чистая логика, тестируется без root)
+    // MARK: - Ruleset generation (pure logic, tested without root)
 
-    /// Собрать полный ruleset из состояния. Бросает, если адрес сервера невалиден —
-    /// лучше отклонить применение, чем загрузить мусор (приоритет: не допустить утечки).
+    /// Build the full ruleset from state. Throws if a server address is invalid — better to
+    /// reject the apply than to load garbage (priority: never allow a leak).
     public func makeRuleset(from state: PersistedState) throws -> String {
         for server in state.servers where !Self.isValidIPv4(server.address) {
             throw PFError.invalidAddress(server.address)
@@ -46,9 +46,9 @@ public final class PFRulesetManager {
                                 lanAllowed: state.lanAllowed)
     }
 
-    /// Сборка текста ruleset из готовых частей. Порядок правил важен: `quick`-правила
-    /// срабатывают первыми, поэтому блок IPv6 и пропуск туннеля/серверов имеют приоритет
-    /// над базовым «block all».
+    /// Assemble the ruleset text from prepared parts. Rule order matters: `quick` rules
+    /// match first, so the IPv6 block and the tunnel/server passes take precedence over
+    /// the base "block all".
     static func makeRuleset(serverAddresses: [String], lanAllowed: Bool) -> String {
         let serversTable = serverAddresses.isEmpty
             ? "table <servers> persist"
@@ -56,94 +56,94 @@ public final class PFRulesetManager {
 
         let lanPass = lanAllowed
             ? "pass quick inet from any to <lan>"
-            : "# доступ к локальной сети выключен (тумблер LAN)"
+            : "# local-network access is off (LAN toggle)"
 
         let ruleset = """
-        # KillSwitch managed ruleset — генерируется автоматически (PFRulesetManager).
-        # Базовое состояние: блокировать весь интернет, пропускать только белый список.
+        # KillSwitch managed ruleset — generated automatically (PFRulesetManager).
+        # Resting state: block all internet, allow only the whitelist.
 
         set block-policy drop
         set skip on lo0
 
-        # База: запретить весь трафик в обе стороны (R1).
+        # Base: block all traffic in both directions (R1).
         block in all
         block out all
 
-        # IPv6 закрыт полностью, без исключений — даже внутри туннеля (R4).
+        # IPv6 fully blocked, no exceptions — even inside the tunnel (R4).
         block quick inet6 all
 
-        # Трафик внутри любого туннеля utun доверяем (R7, R11).
+        # Trust traffic inside any utun tunnel (R7, R11).
         pass quick on utun all
 
-        # Разрешённые серверы — динамическая таблица /32 (R8, R10).
+        # Allowed servers — dynamic /32 table (R8, R10).
         \(serversTable)
         pass out quick inet proto { tcp udp } from any to <servers>
 
-        # Локальная сеть — включается тумблером (R15).
+        # Local network — enabled by a toggle (R15).
         table <lan> const { 10/8, 172.16/12, 192.168/16, 169.254/16 }
         \(lanPass)
 
-        # Сохранить системные якоря Apple — AirDrop, общий доступ (R19).
+        # Preserve Apple's system anchors — AirDrop, sharing (R19).
         anchor "com.apple/*"
         """
-        // Завершающий перевод строки обязателен: pfctl считает незавершённую
-        // последнюю строку синтаксической ошибкой.
+        // A trailing newline is required: pfctl treats an unterminated last line as a
+        // syntax error.
         return ruleset + "\n"
     }
 
-    /// Проверка адреса как IPv4. Отсекает IPv6, мусор и формы с маской.
+    /// Validate an address as IPv4. Rejects IPv6, garbage, and masked forms.
     static func isValidIPv4(_ s: String) -> Bool {
         var addr = in_addr()
         return s.withCString { inet_pton(AF_INET, $0, &addr) } == 1
     }
 
-    // MARK: - Применение (требует root)
+    // MARK: - Applying (requires root)
 
-    /// Синтаксическая проверка ruleset без загрузки (`pfctl -vnf`).
+    /// Syntax-check the ruleset without loading it (`pfctl -vnf`).
     public func validate(_ ruleset: String) throws {
         let tmp = try writeTemp(ruleset)
         defer { try? FileManager.default.removeItem(at: tmp) }
         try run(pfctlPath, ["-vnf", tmp.path])
     }
 
-    /// Проверить, записать и загрузить ruleset. Без `-E`, чтобы не копить ссылки
-    /// включения (KTD7); включение фаервола — отдельно через `enable()`.
+    /// Validate, write, and load the ruleset. No `-E`, to avoid accumulating enable
+    /// references (KTD7); enabling the firewall is done separately via `enable()`.
     public func load(_ ruleset: String) throws {
-        try validate(ruleset)                       // не грузим непроверенное
+        try validate(ruleset)                       // never load the unvalidated
         try ensureDirectoryExists()
         try ruleset.write(to: rulesetURL, atomically: true, encoding: .utf8)
         try run(pfctlPath, ["-f", rulesetURL.path])
     }
 
-    /// Включить фаервол. «Уже включён» — не ошибка.
+    /// Enable the firewall. "Already enabled" is not an error.
     public func enable() throws {
         try runTolerating(pfctlPath, ["-e"], allowing: ["already enabled", "pf enabled"])
     }
 
-    /// Выключить фаервол (аварийный disarm). «Уже выключен» — не ошибка.
+    /// Disable the firewall (emergency disarm). "Already disabled" is not an error.
     public func disable() throws {
         try runTolerating(pfctlPath, ["-d"], allowing: ["already disabled", "pf disabled", "pf not enabled"])
     }
 
-    /// Добавить сервер в таблицу на лету (без перезагрузки правил). Идемпотентно.
+    /// Add a server to the table on the fly (no full reload). Idempotent.
     public func addServer(_ address: String) throws {
         guard Self.isValidIPv4(address) else { throw PFError.invalidAddress(address) }
         try run(pfctlPath, ["-t", "servers", "-T", "add", "\(address)/32"])
     }
 
-    /// Убрать сервер из таблицы на лету. Удаление отсутствующего — не ошибка.
+    /// Remove a server from the table on the fly. Removing a missing one is not an error.
     public func removeServer(_ address: String) throws {
         guard Self.isValidIPv4(address) else { throw PFError.invalidAddress(address) }
         try run(pfctlPath, ["-t", "servers", "-T", "delete", "\(address)/32"])
     }
 
-    /// Включён ли фаервол сейчас (для статуса/watchdog).
+    /// Whether the firewall is currently enabled (for status/watchdog).
     public func isPFEnabled() -> Bool {
         guard let out = try? capture(pfctlPath, ["-s", "info"]) else { return false }
         return out.contains("Status: Enabled")
     }
 
-    // MARK: - Внутреннее
+    // MARK: - Internals
 
     private func writeTemp(_ contents: String) throws -> URL {
         let tmp = URL(fileURLWithPath: NSTemporaryDirectory())

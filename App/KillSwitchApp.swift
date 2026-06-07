@@ -2,9 +2,9 @@ import SwiftUI
 import AppKit
 import KillSwitchShared
 
-/// Приложение в строке меню. Этап A / U4 — минимальный пульт: установка/проверка
-/// демона через SMAppService и путь к Системным настройкам. Полный пульт (статус,
-/// переключатели, «Запрос на разрешение») — в U7–U8.
+/// The menu-bar app. Stage A / U4 — a minimal control panel: install/check the daemon
+/// via SMAppService and a path to System Settings. The full panel (status, toggles,
+/// "approval requests") comes in U7–U8.
 @main
 struct KillSwitchApp: App {
     var body: some Scene {
@@ -16,6 +16,7 @@ struct KillSwitchApp: App {
 }
 
 struct MenuContentView: View {
+    // User-facing status text (shown in the menu, kept in Russian for the end user).
     @State private var statusText = "Проверяется…"
 
     var body: some View {

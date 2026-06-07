@@ -1,36 +1,36 @@
-# KillSwitch — ЭТАЛОННЫЙ шаблон ruleset (только для чтения людьми).
+# KillSwitch — REFERENCE ruleset template (for humans to read only).
 #
-# ВНИМАНИЕ: этот файл не загружается во время работы. Источник истины —
-# генератор PFRulesetManager.makeRuleset(...) в Daemon/PFRulesetManager.swift.
-# Демон собирает ruleset кодом, а не читает этот файл: фаервол работает
-# в режиме fail-closed, и зависимость от внешнего файла означала бы риск
-# остаться без правил (без защиты), если файл не найдётся.
+# NOTE: this file is NOT loaded at runtime. The source of truth is the generator
+# PFRulesetManager.makeRuleset(...) in Daemon/PFRulesetManager.swift. The daemon
+# builds the ruleset in code rather than reading this file: the firewall runs in
+# fail-closed mode, and depending on an external file would risk having no rules
+# (no protection) if the file were missing.
 #
-# Здесь показана статическая форма для понимания структуры. Динамические части,
-# которые подставляет генератор:
-#   <servers> — адреса разрешённых серверов (/32);
-#   строка pass для <lan> — присутствует только когда включён тумблер LAN.
+# This shows the static shape so the structure is easy to understand. Dynamic parts
+# the generator substitutes:
+#   <servers> — addresses of allowed servers (/32);
+#   the <lan> pass line — present only when the LAN toggle is on.
 
 set block-policy drop
 set skip on lo0
 
-# База: запретить весь трафик в обе стороны (R1).
+# Base: block all traffic in both directions (R1).
 block in all
 block out all
 
-# IPv6 закрыт полностью, без исключений — даже внутри туннеля (R4).
+# IPv6 fully blocked, no exceptions — even inside the tunnel (R4).
 block quick inet6 all
 
-# Трафик внутри любого туннеля utun доверяем (R7, R11).
+# Trust traffic inside any utun tunnel (R7, R11).
 pass quick on utun all
 
-# Разрешённые серверы — динамическая таблица /32 (R8, R10).
+# Allowed servers — dynamic /32 table (R8, R10).
 table <servers> persist
 pass out quick inet proto { tcp udp } from any to <servers>
 
-# Локальная сеть — включается тумблером (R15).
+# Local network — enabled by a toggle (R15).
 table <lan> const { 10/8, 172.16/12, 192.168/16, 169.254/16 }
-# pass quick inet from any to <lan>   # активируется генератором при включённом LAN
+# pass quick inet from any to <lan>   # enabled by the generator when LAN is on
 
-# Сохранить системные якоря Apple — AirDrop, общий доступ (R19).
+# Preserve Apple's system anchors — AirDrop, sharing (R19).
 anchor "com.apple/*"
