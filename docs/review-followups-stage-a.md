@@ -16,11 +16,21 @@ the user can ALWAYS disable protection. On startup failure the daemon now just e
 launchd retries; PF stays in its prior state (off on a cold first boot — recoverable).
 
 The real safety net is the OFF switch, which must keep working even when the daemon is
-glitchy. Make sure of this in U7/U8:
-- App disarm command removes/disables the PF rules (U7 XPC).
+glitchy. **HARD REQUIREMENT (user, emphatic): the "Disable protection" button must ALWAYS
+definitively turn protection off — never "almost." If rules are stuck or the daemon is
+hung/unresponsive, the OFF path must escalate, including force-killing/recycling the daemon
+and removing the PF rules, until the internet is actually restored.**
+
+Design this in U7/U8 (the app is unprivileged, so disarm must route through root):
+- App disarm command removes/disables the PF rules via the daemon (U7 XPC).
+- Detect a hung/unresponsive daemon (XPC timeout / heartbeat) and escalate instead of
+  silently failing: e.g. SMAppService unregister to recycle it, and/or a one-shot "disarm
+  intent" flag that a force-restarted daemon honors on next launch to flush PF.
 - The daemon should drop its PF rules when it is stopped/uninstalled (handle SIGTERM), so
   "System Settings → Login Items → toggle off" actually restores the internet, not just
-  stops the process. Verify this end-to-end.
+  stops the process.
+- Verify the whole thing end-to-end, including the hung-daemon case (e.g. SIGSTOP the
+  daemon, then confirm the button still restores internet).
 
 ## Must verify on the real machine (with root) before trusting protection
 
