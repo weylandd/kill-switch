@@ -4,6 +4,13 @@ import KillSwitchShared
 
 final class PFRulesetManagerTests: XCTestCase {
 
+    /// Регрессия: ruleset обязан заканчиваться переводом строки — иначе pfctl считает
+    /// незавершённую последнюю строку синтаксической ошибкой и правила не грузятся.
+    func testRulesetEndsWithNewline() {
+        XCTAssertTrue(PFRulesetManager.makeRuleset(serverAddresses: [], lanAllowed: false).hasSuffix("\n"))
+        XCTAssertTrue(PFRulesetManager.makeRuleset(serverAddresses: ["1.2.3.4"], lanAllowed: true).hasSuffix("\n"))
+    }
+
     /// Covers AE6: ruleset содержит default-deny и полный блок IPv6.
     func testDefaultDenyAndFullIPv6Block() {
         let r = PFRulesetManager.makeRuleset(serverAddresses: [], lanAllowed: false)

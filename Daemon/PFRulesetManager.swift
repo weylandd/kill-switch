@@ -58,7 +58,7 @@ public final class PFRulesetManager {
             ? "pass quick inet from any to <lan>"
             : "# доступ к локальной сети выключен (тумблер LAN)"
 
-        return """
+        let ruleset = """
         # KillSwitch managed ruleset — генерируется автоматически (PFRulesetManager).
         # Базовое состояние: блокировать весь интернет, пропускать только белый список.
 
@@ -86,6 +86,9 @@ public final class PFRulesetManager {
         # Сохранить системные якоря Apple — AirDrop, общий доступ (R19).
         anchor "com.apple/*"
         """
+        // Завершающий перевод строки обязателен: pfctl считает незавершённую
+        // последнюю строку синтаксической ошибкой.
+        return ruleset + "\n"
     }
 
     /// Проверка адреса как IPv4. Отсекает IPv6, мусор и формы с маской.
