@@ -11,6 +11,9 @@ public protocol PFControlling {
     func addServer(_ address: String) throws
     func removeServer(_ address: String) throws
     func isPFEnabled() -> Bool
+    /// Whether our managed ruleset is currently loaded (not flushed). Used by the watchdog
+    /// to tell a rules-flush apart from a healthy state.
+    func isRulesetLoaded() -> Bool
 }
 
 extension PFRulesetManager: PFControlling {}

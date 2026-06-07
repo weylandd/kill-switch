@@ -7,6 +7,7 @@ final class FakePF: PFControlling {
     enum Op: Equatable { case make, load, enable, disable, add(String), remove(String) }
     private(set) var ops: [Op] = []
     var enabled = false
+    var rulesLoaded = false   // does our ruleset sit in the kernel (set by load, cleared by an external flush)
     var lastRuleset = ""
     var failMake = false   // if true, makeRuleset throws (simulates an invalid state)
 
@@ -16,12 +17,14 @@ final class FakePF: PFControlling {
         lastRuleset = "servers=\(state.servers.map(\.address).joined(separator: ","));lan=\(state.lanAllowed)"
         return lastRuleset
     }
-    func load(_ ruleset: String) throws { ops.append(.load) }
+    func load(_ ruleset: String) throws { ops.append(.load); rulesLoaded = true }
     func enable() throws { ops.append(.enable); enabled = true }
+    // `pfctl -d` disables the firewall but the rules stay in the kernel — model that.
     func disable() throws { ops.append(.disable); enabled = false }
     func addServer(_ address: String) throws { ops.append(.add(address)) }
     func removeServer(_ address: String) throws { ops.append(.remove(address)) }
     func isPFEnabled() -> Bool { enabled }
+    func isRulesetLoaded() -> Bool { rulesLoaded }
 }
 
 final class DaemonBootstrapTests: XCTestCase {

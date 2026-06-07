@@ -4,7 +4,7 @@ import KillSwitchDaemonCore
 
 // The privileged daemon. At startup it raises protection from the persisted state (U4):
 // load state -> build the default-deny ruleset -> enable the firewall.
-// The XPC service for talking to the app is wired up in U7; the watchdog is U5.
+// The XPC service for talking to the app is wired up in U7.
 
 let bootstrap = DaemonBootstrap()
 do {
@@ -19,6 +19,11 @@ do {
         Data("[\(KillSwitchConfig.daemonLabel)] startup failed, exiting for restart: \(error)\n".utf8))
     exit(EXIT_FAILURE)
 }
+
+// Keep protection from silently staying down if PF is disabled or the rules are flushed (U5).
+// It reads the persisted state on every check, so it never fights an explicit disarm.
+let watchdog = Watchdog(pf: PFRulesetManager(), stateProvider: { StateStore().load() })
+watchdog.start()
 
 // The daemon is a long-lived process under launchd. Keep the runloop alive.
 RunLoop.main.run()

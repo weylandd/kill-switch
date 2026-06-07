@@ -143,6 +143,22 @@ public final class PFRulesetManager {
         return out.contains("Status: Enabled")
     }
 
+    /// Whether our managed ruleset is loaded (for the watchdog).
+    ///
+    /// Our ruleset always contains a distinctive `pass ... on utun ...` rule that the default
+    /// macOS PF configuration does not. If the rules were flushed (`pfctl -F rules` / `-F all`)
+    /// the listing no longer contains it, so we treat that as "our protection is gone" and the
+    /// watchdog reinstalls it. Checking the rules (not just the persistent `<servers>` table)
+    /// matters because `pfctl -F rules` drops the block rules while leaving the table behind.
+    ///
+    /// NOTE: pfctl normalizes rule text on output (it may insert `drop`, `flags any`, etc.), so
+    /// the exact match must be confirmed on a real machine (see
+    /// docs/review-followups-stage-a.md). We deliberately match a stable substring.
+    public func isRulesetLoaded() -> Bool {
+        guard let result = try? exec(pfctlPath, ["-sr"]), result.status == 0 else { return false }
+        return result.output.contains("on utun")
+    }
+
     // MARK: - Internals
 
     private func writeTemp(_ contents: String) throws -> URL {
