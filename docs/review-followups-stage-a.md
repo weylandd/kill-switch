@@ -51,6 +51,13 @@ Design this in U7/U8 (the app is unprivileged, so disarm must route through root
   `KS_RUN_INTEGRATION=1 sudo xcodebuild test -scheme KillSwitchTests -destination 'platform=macOS'`.
 - Confirm SMAppService registration actually works with the chosen signing
   (ad-hoc may be rejected — a real Developer ID / team may be required).
+- **Watchdog (U5) detection accuracy.** `PFRulesetManager.isRulesetLoaded()`
+  decides "our ruleset is loaded" by matching the substring `on utun` in
+  `pfctl -sr` output. pfctl normalizes rule text on output, so confirm the
+  token actually appears once our ruleset is loaded, and is absent after
+  `pfctl -F rules`. Also tune the watchdog interval (default 5s) and confirm
+  `pfctl -F`/`pfctl -d` auto-rolls-back by direct observation (pflog does not
+  write while PF is disabled).
 
 ## Defer to U7 (when XPC + allow/remove are wired)
 
