@@ -12,6 +12,9 @@ import Foundation
     /// List of approval candidates. reply: JSON `[Candidate]`, or nil.
     func fetchCandidates(reply: @escaping (Data?) -> Void)
 
+    /// The allowed-servers whitelist. reply: JSON `[ServerRule]`, or nil.
+    func fetchServers(reply: @escaping (Data?) -> Void)
+
     /// Allow a server by address (add its /32 to the whitelist).
     /// reply: success + error text on failure.
     func allowServer(address: String, label: String, port: Int, reply: @escaping (Bool, String?) -> Void)

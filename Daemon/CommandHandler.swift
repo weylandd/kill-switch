@@ -51,6 +51,10 @@ public final class CommandHandler {
         return candidates.candidates(allowedServers: allowed, now: now)
     }
 
+    public func serverList() -> [ServerRule] {
+        store.load().servers
+    }
+
     // MARK: - Mutations
 
     /// Allow a server: persist the rule, then add its /32 to the live table. Idempotent.

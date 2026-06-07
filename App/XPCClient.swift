@@ -23,6 +23,11 @@ public final class XPCClient {
         return data.flatMap { try? decoder.decode([Candidate].self, from: $0) } ?? []
     }
 
+    public func fetchServers() async -> [ServerRule] {
+        let data = await withData { proxy, reply in proxy.fetchServers(reply: reply) }
+        return data.flatMap { try? decoder.decode([ServerRule].self, from: $0) } ?? []
+    }
+
     public func allowServer(address: String, label: String, port: Int) async -> (Bool, String?) {
         await withResult { proxy, reply in proxy.allowServer(address: address, label: label, port: port, reply: reply) }
     }

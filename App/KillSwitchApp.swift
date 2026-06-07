@@ -2,68 +2,97 @@ import SwiftUI
 import AppKit
 import KillSwitchShared
 
-/// The menu-bar app. Stage A / U4 — a minimal control panel: install/check the daemon
-/// via SMAppService and a path to System Settings. The full panel (status, toggles,
-/// "approval requests") comes in U7–U8.
+/// The menu-bar app: a thin remote control over the privileged daemon. The icon reflects the
+/// protection state (and a pending approval request); the window holds the controls.
 @main
 struct KillSwitchApp: App {
+    @StateObject private var controller = MenuBarController()
+
     var body: some Scene {
-        MenuBarExtra("KillSwitch", systemImage: "shield") {
-            MenuContentView()
+        MenuBarExtra {
+            ControlPanelView(controller: controller)
+                .onAppear { controller.startPolling() }
+        } label: {
+            Image(systemName: controller.menuBarSymbol)
         }
         .menuBarExtraStyle(.window)
     }
 }
 
-struct MenuContentView: View {
-    // User-facing status text (shown in the menu, kept in Russian for the end user).
-    @State private var statusText = "Проверяется…"
+/// The popover content. Routes between first-run setup, the unreachable state, and the normal
+/// controls, but always shows the status header so the user is never left guessing.
+struct ControlPanelView: View {
+    @ObservedObject var controller: MenuBarController
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("KillSwitch").font(.headline)
-            Text("Статус защиты: \(statusText)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 12) {
+            Text("KillSwitch").font(.title3).bold()
+            StatusHeader(state: controller.state)
 
             Divider()
 
-            Button("Установить / проверить защиту", action: install)
-            Button("Открыть «Объекты входа» в Системных настройках", action: openSettings)
+            switch controller.state {
+            case .needsApproval:
+                setupSection
+            case .daemonUnreachable:
+                unreachableSection
+            default:
+                controlsSection
+            }
 
             Divider()
-
             Button("Выйти") { NSApplication.shared.terminate(nil) }
         }
-        .padding(12)
-        .frame(width: 340)
-        .onAppear(perform: refreshStatus)
+        .padding(14)
+        .frame(width: 360)
     }
 
-    private func refreshStatus() {
-        if #available(macOS 13.0, *) {
-            statusText = DaemonRegistration.statusDescription
-        } else {
-            statusText = "требуется macOS 13 или новее"
+    // First run: the daemon isn't approved yet.
+    private var setupSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Чтобы защита заработала, включите KillSwitch в Системных настройках → «Объекты входа и расширения».")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Button("Установить / проверить защиту") { controller.register() }
+            Button("Открыть Системные настройки") { controller.openSettings() }
         }
     }
 
-    private func install() {
-        guard #available(macOS 13.0, *) else { return }
-        switch DaemonRegistration.register() {
-        case .registered:
-            statusText = "установлена и активна"
-        case .requiresApproval:
-            statusText = "требуется одобрение → Системные настройки → «Объекты входа и расширения»"
-        case .failed(let message):
-            statusText = "не удалось установить: \(message)"
+    // Daemon approved but not answering.
+    private var unreachableSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Не удаётся связаться со службой защиты. Защита может ещё работать, но управлять ей сейчас нельзя.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Button("Повторить") { Task { await controller.refresh() } }
+            Button("Открыть Системные настройки") { controller.openSettings() }
         }
     }
 
-    private func openSettings() {
-        if #available(macOS 13.0, *) {
-            DaemonRegistration.openLoginItemsSettings()
+    // Normal controls.
+    private var controlsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle("Защита включена", isOn: Binding(
+                get: { controller.status?.protectionEnabled ?? false },
+                set: { controller.setProtection($0) }))
+                .toggleStyle(.switch)
+
+            Toggle("Доступ к локальной сети", isOn: Binding(
+                get: { controller.status?.lanAllowed ?? false },
+                set: { controller.setLAN($0) }))
+                .toggleStyle(.switch)
+
+            Divider()
+            PermissionRequestsView(candidates: controller.candidates, onAllow: controller.allow)
+
+            Divider()
+            ServersListView(servers: controller.servers,
+                            manualAddress: $controller.manualAddress,
+                            manualError: controller.manualError,
+                            onAdd: controller.addManual,
+                            onRemove: controller.remove)
+
+            if let lastError = controller.lastError {
+                Text(lastError).font(.caption).foregroundStyle(.red)
+            }
         }
     }
 }

@@ -44,6 +44,10 @@ final class ExportedDaemon: NSObject, KillSwitchDaemonProtocol {
         reply(try? encoder.encode(handler.candidateList()))
     }
 
+    func fetchServers(reply: @escaping (Data?) -> Void) {
+        reply(try? encoder.encode(handler.serverList()))
+    }
+
     func allowServer(address: String, label: String, port: Int, reply: @escaping (Bool, String?) -> Void) {
         run(reply) { try self.handler.allowServer(address: address, label: label, port: port) }
     }
