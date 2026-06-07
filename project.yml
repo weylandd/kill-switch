@@ -35,23 +35,57 @@ targets:
         PRODUCT_NAME: KillSwitchShared
         SKIP_INSTALL: YES
 
-  # Привилегированный демон (исполняемый файл командной строки, без бандла).
-  KillSwitchDaemon:
-    type: tool
+  # Логика демона как отдельная библиотека — чтобы её можно было покрыть тестами
+  # (исполняемый файл с main.swift тестировать неудобно). Сюда идут StateStore,
+  # PFRulesetManager, Watchdog, ConnectionObserver и т.п.
+  KillSwitchDaemonCore:
+    type: library.static
     platform: macOS
     sources:
       - path: Daemon
         excludes:
+          - "main.swift"
           - "killswitch.pf.template"
           - "com.killswitch.daemon.plist"
     dependencies:
       - target: KillSwitchShared
     settings:
       base:
+        PRODUCT_NAME: KillSwitchDaemonCore
+        SKIP_INSTALL: YES
+      configs:
+        Debug:
+          ENABLE_TESTABILITY: YES      # для @testable import в тестах
+
+  # Привилегированный демон (исполняемый файл командной строки) — тонкая обёртка
+  # над KillSwitchDaemonCore.
+  KillSwitchDaemon:
+    type: tool
+    platform: macOS
+    sources:
+      - Daemon/main.swift
+    dependencies:
+      - target: KillSwitchShared
+      - target: KillSwitchDaemonCore
+    settings:
+      base:
         PRODUCT_NAME: com.killswitch.daemon
         PRODUCT_BUNDLE_IDENTIFIER: com.killswitch.daemon
         GENERATE_INFOPLIST_FILE: YES
         CREATE_INFOPLIST_SECTION_IN_BINARY: YES
+
+  # Тесты логики демона (логические тесты, без host-приложения).
+  KillSwitchDaemonTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - Tests/DaemonTests
+    dependencies:
+      - target: KillSwitchDaemonCore
+      - target: KillSwitchShared
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
 
   # Приложение в строке меню — тонкий пульт поверх демона.
   KillSwitch:
@@ -94,3 +128,12 @@ schemes:
         KillSwitchDaemon: all
     run:
       config: Debug
+  # Схема для прогона тестов: xcodebuild test -scheme KillSwitchTests
+  KillSwitchTests:
+    build:
+      targets:
+        KillSwitchDaemonCore: all
+    test:
+      config: Debug
+      targets:
+        - KillSwitchDaemonTests

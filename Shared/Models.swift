@@ -13,7 +13,9 @@ public struct ServerRule: Codable, Equatable, Identifiable {
         self.address = address
         self.port = port
         self.label = label
-        self.addedAt = addedAt
+        // Точность до секунды: в хранилище дата идёт в ISO8601 без долей секунды,
+        // поэтому нормализуем здесь, чтобы сохранение/загрузка давали идентичный результат.
+        self.addedAt = Date(timeIntervalSince1970: addedAt.timeIntervalSince1970.rounded(.towardZero))
     }
 }
 
