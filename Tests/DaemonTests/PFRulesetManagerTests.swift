@@ -19,6 +19,28 @@ final class PFRulesetManagerTests: XCTestCase {
         XCTAssertTrue(r.contains("block quick inet6 all"), "IPv6 fully blocked (R4)")
     }
 
+    /// Guards the core invariant: `block quick inet6 all` MUST come before `pass quick on
+    /// utun all`, otherwise IPv6 could leak inside the tunnel. Substring-presence tests do
+    /// not catch a reordering, so assert the order explicitly.
+    func testIPv6BlockComesBeforeUtunPass() {
+        let r = PFRulesetManager.makeRuleset(serverAddresses: ["1.2.3.4"], lanAllowed: true)
+        guard let ipv6Index = r.range(of: "block quick inet6 all"),
+              let utunIndex = r.range(of: "pass quick on utun all") else {
+            return XCTFail("both rules must be present")
+        }
+        XCTAssertLessThan(ipv6Index.lowerBound, utunIndex.lowerBound,
+                          "IPv6 must be blocked before the utun pass, or IPv6 leaks inside the tunnel")
+    }
+
+    /// The minimal lockdown ruleset is itself a valid-looking default-deny that ends with a newline.
+    func testLockdownRulesetIsDefaultDeny() {
+        let r = PFRulesetManager.minimalLockdownRuleset
+        XCTAssertTrue(r.contains("block in all"))
+        XCTAssertTrue(r.contains("block out all"))
+        XCTAssertTrue(r.contains("block quick inet6 all"))
+        XCTAssertTrue(r.hasSuffix("\n"), "must end with a newline (pfctl requirement)")
+    }
+
     /// Covers AE7: trust any utun, regardless of which ones are active.
     func testTrustsAnyUtunInterface() {
         let r = PFRulesetManager.makeRuleset(serverAddresses: ["89.106.86.61"], lanAllowed: false)

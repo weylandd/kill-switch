@@ -11,10 +11,12 @@ do {
     try bootstrap.start()
 } catch {
     // Fail-closed: if protection could not be raised, do NOT keep running without rules.
-    // Exit with an error so launchd (KeepAlive) restarts the daemon and retries
-    // (launchd throttles restarts, so there is no tight loop).
+    // First try an emergency block-all lockdown so the machine is closed (no internet)
+    // rather than left open during the restart window. Then exit so launchd (KeepAlive)
+    // restarts the daemon and retries full startup (launchd throttles restarts).
     FileHandle.standardError.write(
-        Data("[\(KillSwitchConfig.daemonLabel)] startup failed, exiting for restart: \(error)\n".utf8))
+        Data("[\(KillSwitchConfig.daemonLabel)] startup failed, locking down then exiting for restart: \(error)\n".utf8))
+    bootstrap.emergencyLockdown()
     exit(EXIT_FAILURE)
 }
 

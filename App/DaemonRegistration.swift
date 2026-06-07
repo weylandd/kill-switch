@@ -47,12 +47,13 @@ public enum DaemonRegistration {
 
     /// Human-readable status description for the UI (kept in Russian for the end user).
     public static var statusDescription: String {
-        switch service.status {
+        let status = service.status   // read once: `service` builds a fresh instance per access
+        switch status {
         case .enabled:          return "установлен и активен"
         case .requiresApproval: return "требует одобрения в Системных настройках"
         case .notRegistered:    return "не установлен"
         case .notFound:         return "не найден в бандле"
-        @unknown default:       return "неизвестно (\(service.status.rawValue))"
+        @unknown default:       return "неизвестно (\(status.rawValue))"
         }
     }
 
