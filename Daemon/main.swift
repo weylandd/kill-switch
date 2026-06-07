@@ -10,9 +10,12 @@ let bootstrap = DaemonBootstrap()
 do {
     try bootstrap.start()
 } catch {
-    // Не молчим: при KeepAlive launchd перезапустит демон, и старт повторится.
+    // Fail-closed: если защиту поднять не удалось, НЕ остаёмся жить без правил.
+    // Выходим с ошибкой — launchd (KeepAlive) перезапустит демон и повторит попытку
+    // (launchd троттлит рестарты, поэтому плотного цикла не будет).
     FileHandle.standardError.write(
-        Data("[\(KillSwitchConfig.daemonLabel)] ОШИБКА старта защиты: \(error)\n".utf8))
+        Data("[\(KillSwitchConfig.daemonLabel)] ОШИБКА старта защиты, выходим для перезапуска: \(error)\n".utf8))
+    exit(EXIT_FAILURE)
 }
 
 // Демон — долгоживущий процесс под launchd. Держим runloop.

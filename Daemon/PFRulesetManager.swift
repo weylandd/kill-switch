@@ -117,7 +117,7 @@ public final class PFRulesetManager {
 
     /// Включить фаервол. «Уже включён» — не ошибка.
     public func enable() throws {
-        try runTolerating(pfctlPath, ["-e"], allowing: ["already enabled", "pf enabled", "altq"])
+        try runTolerating(pfctlPath, ["-e"], allowing: ["already enabled", "pf enabled"])
     }
 
     /// Выключить фаервол (аварийный disarm). «Уже выключен» — не ошибка.
