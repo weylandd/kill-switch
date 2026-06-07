@@ -25,5 +25,10 @@ do {
 let watchdog = Watchdog(pf: PFRulesetManager(), stateProvider: { StateStore().load() })
 watchdog.start()
 
+// Watch for direct outbound attempts so the app can offer new servers for approval (U6).
+// The XPC layer (U7) reads its candidate list on demand.
+let observer = ConnectionObserver()
+observer.start()
+
 // The daemon is a long-lived process under launchd. Keep the runloop alive.
 RunLoop.main.run()
