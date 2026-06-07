@@ -92,10 +92,8 @@ public final class PFRulesetManager {
     }
 
     /// Validate an address as IPv4. Rejects IPv6, garbage, and masked forms.
-    static func isValidIPv4(_ s: String) -> Bool {
-        var addr = in_addr()
-        return s.withCString { inet_pton(AF_INET, $0, &addr) } == 1
-    }
+    /// Single source of truth shared with the app's manual-entry validation.
+    static func isValidIPv4(_ s: String) -> Bool { IPv4.isValid(s) }
 
     // MARK: - Applying (requires root)
 
