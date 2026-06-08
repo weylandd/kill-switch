@@ -41,7 +41,7 @@ public final class CommandHandler {
         let state = store.load()
         let allowed = Set(state.servers.map(\.address))
         let tunnelUp = !candidates.recentlyConnectedServers(among: allowed, within: tunnelActiveWindow, now: now).isEmpty
-        let hasNew = !candidates.candidates(allowedServers: allowed, now: now).isEmpty
+        let hasNew = !candidates.candidates(allowedServers: allowed, vpnClientHints: vpnClientHints(state), now: now).isEmpty
         return DaemonStatus(protectionEnabled: state.protectionEnabled,
                             pfEnabled: pf.isPFEnabled(),
                             tunnelActive: tunnelUp,
@@ -51,8 +51,16 @@ public final class CommandHandler {
     }
 
     public func candidateList(now: Date = Date()) -> [Candidate] {
-        let allowed = Set(store.load().servers.map(\.address))
-        return candidates.candidates(allowedServers: allowed, now: now)
+        let state = store.load()
+        let allowed = Set(state.servers.map(\.address))
+        return candidates.candidates(allowedServers: allowed, vpnClientHints: vpnClientHints(state), now: now)
+    }
+
+    /// Which process names count as a VPN client for candidate filtering: the built-in defaults plus
+    /// anything the user configured (`clients`) plus the labels of already-approved servers (so the
+    /// client that produced an approved server keeps surfacing its other servers).
+    private func vpnClientHints(_ state: PersistedState) -> [String] {
+        KillSwitchConfig.defaultVPNClientHints + state.clients + state.servers.map(\.label)
     }
 
     public func serverList() -> [ServerRule] {

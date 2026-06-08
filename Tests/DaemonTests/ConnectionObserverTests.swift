@@ -53,7 +53,7 @@ final class ConnectionObserverTests: XCTestCase {
         let obs = makeObserver(scanner: scanner, inspector: FakeInspector())
 
         obs.refresh()
-        let candidates = obs.candidates(allowedServers: [])
+        let candidates = obs.candidates(allowedServers: [], vpnClientHints: ["v2ray"])
         XCTAssertEqual(candidates.count, 1)
         XCTAssertEqual(candidates.first?.processName, "v2RayTun")
         XCTAssertEqual(candidates.first?.address, "89.106.86.61")
@@ -68,7 +68,7 @@ final class ConnectionObserverTests: XCTestCase {
         let obs = makeObserver(scanner: scanner, inspector: FakeInspector())
 
         obs.refresh()
-        XCTAssertTrue(obs.candidates(allowedServers: ["89.106.86.61"]).isEmpty,
+        XCTAssertTrue(obs.candidates(allowedServers: ["89.106.86.61"], vpnClientHints: ["v2ray"]).isEmpty,
                       "an approved server is no longer a candidate")
     }
 
@@ -84,7 +84,7 @@ final class ConnectionObserverTests: XCTestCase {
         let obs = makeObserver(scanner: scanner, inspector: inspector)
 
         obs.refresh()
-        let candidates = obs.candidates(allowedServers: [])
+        let candidates = obs.candidates(allowedServers: [], vpnClientHints: ["v2ray"])
         XCTAssertEqual(candidates.map(\.address), ["89.106.86.61"], "only the direct public attempt survives")
     }
 
@@ -97,7 +97,7 @@ final class ConnectionObserverTests: XCTestCase {
         let obs = makeObserver(scanner: scanner, inspector: FakeInspector())
 
         obs.refresh()
-        let candidates = obs.candidates(allowedServers: [])
+        let candidates = obs.candidates(allowedServers: [], vpnClientHints: ["v2ray"])
         XCTAssertEqual(candidates.count, 1)
         XCTAssertTrue(candidates.first?.isIPv6 == true, "marked as IPv6 so the UI can flag it as un-allowable")
     }
@@ -112,7 +112,8 @@ final class ConnectionObserverTests: XCTestCase {
         let obs = makeObserver(scanner: scanner, inspector: FakeInspector())
 
         obs.refresh()
-        XCTAssertEqual(Set(obs.candidates(allowedServers: []).map(\.address)), ["89.106.86.61", "5.6.7.8"])
+        XCTAssertEqual(Set(obs.candidates(allowedServers: [], vpnClientHints: ["v2ray"]).map(\.address)),
+                       ["89.106.86.61", "5.6.7.8"])
     }
 
     /// Re-scanning the same connection refreshes its timestamp instead of duplicating the row.
@@ -124,7 +125,8 @@ final class ConnectionObserverTests: XCTestCase {
 
         obs.refresh(now: Date(timeIntervalSince1970: 1000))
         obs.refresh(now: Date(timeIntervalSince1970: 1003))
-        XCTAssertEqual(obs.candidates(allowedServers: [], now: Date(timeIntervalSince1970: 1003)).count, 1,
+        XCTAssertEqual(obs.candidates(allowedServers: [], vpnClientHints: ["v2ray"],
+                                      now: Date(timeIntervalSince1970: 1003)).count, 1,
                        "the same socket seen twice stays one candidate")
     }
 
@@ -139,7 +141,7 @@ final class ConnectionObserverTests: XCTestCase {
         let stale = ConnectionSample(processName: "old", address: "2.2.2.2", port: 443,
                                      seenAt: now.addingTimeInterval(-600))       // 10 min ago
         let result = ConnectionObserver.selectCandidates(
-            samples: [recent, stale], allowedServers: [], now: now,
+            samples: [recent, stale], allowedServers: [], vpnClientHints: [], now: now,
             recentProcessLimit: 1, window: 300)
         // "fresh" is both within window and the single most-recent process; "old" is neither.
         XCTAssertEqual(result.map(\.address), ["1.1.1.1"])
@@ -151,7 +153,46 @@ final class ConnectionObserverTests: XCTestCase {
         let older = ConnectionSample(processName: "a", address: "1.1.1.1", port: 1, seenAt: now.addingTimeInterval(-10))
         let newer = ConnectionSample(processName: "b", address: "2.2.2.2", port: 2, seenAt: now.addingTimeInterval(-1))
         let result = ConnectionObserver.selectCandidates(
-            samples: [older, newer], allowedServers: [], now: now, recentProcessLimit: 5, window: 300)
+            samples: [older, newer], allowedServers: [], vpnClientHints: [], now: now,
+            recentProcessLimit: 5, window: 300)
         XCTAssertEqual(result.map(\.address), ["2.2.2.2", "1.1.1.1"])
+    }
+
+    // MARK: - VPN-client filtering (the 693-candidate flood fix)
+
+    /// Only connections from VPN-client processes become candidates; other apps' blocked attempts
+    /// (which flood the list when default-deny is active) are dropped.
+    func testOnlyVPNClientProcessesBecomeCandidates() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let samples = [
+            ConnectionSample(processName: "Google Chrome H", address: "142.250.1.1", port: 443, seenAt: now),
+            ConnectionSample(processName: "v2RayTun", address: "89.106.86.61", port: 443, seenAt: now),
+            ConnectionSample(processName: "Spotify", address: "35.186.1.1", port: 443, seenAt: now),
+        ]
+        let result = ConnectionObserver.selectCandidates(
+            samples: samples, allowedServers: [], vpnClientHints: ["v2ray"], now: now,
+            recentProcessLimit: 5, window: 300)
+        XCTAssertEqual(result.map(\.address), ["89.106.86.61"],
+                       "only the VPN client's attempt survives; Chrome/Spotify noise is dropped")
+    }
+
+    /// The list is capped so a pathological flood can never make it unreviewable.
+    func testCandidateListIsCapped() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let many = (0..<100).map {
+            ConnectionSample(processName: "v2RayTun", address: "8.8.\($0 / 256).\($0 % 256)", port: 443, seenAt: now)
+        }
+        let result = ConnectionObserver.selectCandidates(
+            samples: many, allowedServers: [], vpnClientHints: ["v2ray"], now: now,
+            recentProcessLimit: 5, window: 300, maxCount: 25)
+        XCTAssertEqual(result.count, 25, "the candidate list is capped")
+    }
+
+    /// The matcher: case-insensitive substring; empty hints disable the filter.
+    func testVPNClientMatching() {
+        XCTAssertTrue(ConnectionObserver.matchesVPNClient("v2RayTun", hints: ["v2ray"]))
+        XCTAssertTrue(ConnectionObserver.matchesVPNClient("Happ", hints: ["happ"]))
+        XCTAssertFalse(ConnectionObserver.matchesVPNClient("Google Chrome H", hints: ["v2ray", "happ"]))
+        XCTAssertTrue(ConnectionObserver.matchesVPNClient("anything", hints: []), "empty hints disable the filter")
     }
 }

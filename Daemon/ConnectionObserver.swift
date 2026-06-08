@@ -75,7 +75,7 @@ public protocol InterfaceInspecting {
 /// allowed server is currently connected (for the "tunnel up" status). A protocol so the
 /// command handler can be tested with a fake.
 public protocol CandidateProviding {
-    func candidates(allowedServers: Set<String>, now: Date) -> [Candidate]
+    func candidates(allowedServers: Set<String>, vpnClientHints: [String], now: Date) -> [Candidate]
     func recentlyConnectedServers(among allowed: Set<String>, within: TimeInterval, now: Date) -> Set<String>
 }
 
@@ -141,11 +141,14 @@ public final class ConnectionObserver: CandidateProviding {
         prune(now: now)
     }
 
-    /// The current approval candidates, with already-approved servers removed.
-    public func candidates(allowedServers: Set<String>, now: Date = Date()) -> [Candidate] {
+    /// The current approval candidates: blocked direct attempts from VPN-client processes, with
+    /// already-approved servers removed. Restricting to VPN clients is what keeps the list reviewable
+    /// — otherwise every app's blocked connection floods it while default-deny is active.
+    public func candidates(allowedServers: Set<String>, vpnClientHints: [String], now: Date = Date()) -> [Candidate] {
         lock.lock(); defer { lock.unlock() }
         prune(now: now)
-        return Self.selectCandidates(samples: buffer, allowedServers: allowedServers, now: now,
+        return Self.selectCandidates(samples: buffer, allowedServers: allowedServers,
+                                     vpnClientHints: vpnClientHints, now: now,
                                      recentProcessLimit: recentProcessLimit, window: window)
     }
 
@@ -172,11 +175,25 @@ public final class ConnectionObserver: CandidateProviding {
         return s.isIPv6 || AddressRules.isPublicUnicastIPv4(s.address)
     }
 
+    /// True when a process name looks like a VPN client (case-insensitive substring of any hint).
+    /// Empty hints disable the filter (treat everything as a candidate) — used only by tests.
+    static func matchesVPNClient(_ processName: String, hints: [String]) -> Bool {
+        guard !hints.isEmpty else { return true }
+        let name = processName.lowercased()
+        return hints.contains { !$0.isEmpty && name.contains($0.lowercased()) }
+    }
+
     /// Build the candidate list per R22: (the `recentProcessLimit` most-recently-active processes)
-    /// ∪ (every attempt within `window`), minus already-approved server addresses. Newest first.
+    /// ∪ (every attempt within `window`), restricted to VPN-client processes and minus already-
+    /// approved server addresses. Newest first, capped at `maxCount` so a pathological flood can
+    /// never make the list unreviewable.
     static func selectCandidates(samples: [ConnectionSample], allowedServers: Set<String>,
-                                 now: Date, recentProcessLimit: Int, window: TimeInterval) -> [Candidate] {
-        let visible = samples.filter { !allowedServers.contains($0.address) }
+                                 vpnClientHints: [String], now: Date,
+                                 recentProcessLimit: Int, window: TimeInterval,
+                                 maxCount: Int = 25) -> [Candidate] {
+        let visible = samples.filter {
+            !allowedServers.contains($0.address) && matchesVPNClient($0.processName, hints: vpnClientHints)
+        }
 
         var lastByProcess: [String: Date] = [:]
         for s in visible {
@@ -188,10 +205,11 @@ public final class ConnectionObserver: CandidateProviding {
         let eligible = visible.filter {
             now.timeIntervalSince($0.seenAt) <= window || recentProcesses.contains($0.processName)
         }
-        return eligible
+        let sorted = eligible
             .map { Candidate(processName: $0.processName, address: $0.address, port: $0.port,
                              lastSeen: $0.seenAt, isIPv6: $0.isIPv6) }
             .sorted { $0.lastSeen > $1.lastSeen }
+        return Array(sorted.prefix(maxCount))
     }
 
     /// Drop samples not seen within `retention` (bounds memory; keeps the recent-process arm useful).

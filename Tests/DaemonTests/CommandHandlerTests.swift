@@ -7,7 +7,7 @@ final class FakeCandidates: CandidateProviding {
     var list: [Candidate] = []
     var connectedServers: Set<String> = []
 
-    func candidates(allowedServers: Set<String>, now: Date) -> [Candidate] {
+    func candidates(allowedServers: Set<String>, vpnClientHints: [String], now: Date) -> [Candidate] {
         list.filter { !allowedServers.contains($0.address) }
     }
     func recentlyConnectedServers(among allowed: Set<String>, within: TimeInterval, now: Date) -> Set<String> {

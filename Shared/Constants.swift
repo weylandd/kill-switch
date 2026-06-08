@@ -14,4 +14,16 @@ public enum KillSwitchConfig {
 
     /// Daemon state directory. Root-only (created by the daemon on first start).
     public static let stateDirectory = "/Library/Application Support/KillSwitch"
+
+    /// Process-name hints for recognising a VPN client when building the approval-candidate list.
+    /// Without this, default-deny blocks every app's outbound attempt and the candidate list fills
+    /// with hundreds of unrelated connections (browsers, telemetry, background services) that the
+    /// user can never sensibly review. Matched case-insensitively as a substring of the process
+    /// name; the user's configured `clients` and the labels of already-approved servers are added on
+    /// top of these at runtime, and manual IP entry remains the fallback if a client isn't matched.
+    public static let defaultVPNClientHints: [String] = [
+        "v2ray", "happ", "incy", "streisand", "foxray", "shadowrocket", "hiddify",
+        "nekobox", "nekoray", "sing-box", "singbox", "xray", "clash", "mihomo",
+        "karing", "outline", "wireguard", "tun2socks", "packet-ex", "packettunnel", "neagent"
+    ]
 }
