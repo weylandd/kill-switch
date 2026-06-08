@@ -92,6 +92,13 @@ pfctl -s rules 2>/dev/null | grep -E 'utun|servers|out all' | sed 's/^/  /'
 echo
 echo "### 10. events.log:"
 tail -4 "$INSTALL_DIR/events.log" 2>/dev/null | sed 's/^/  /'
+echo
+echo "### 11. R19 — Apple-якорь и наш backstop против утечки:"
+echo "  -- правила внутри com.apple (любой 'pass' тут наш backstop перекрывает):"
+pfctl -a 'com.apple/*' -sr 2>/dev/null | sed 's/^/    /' || true
+[ -z "$(pfctl -a 'com.apple/*' -sr 2>/dev/null)" ] && echo "    (пусто — Apple-якорь не содержит правил, утечки отсюда нет)"
+echo -n "  -- финальный backstop 'block out quick inet all' загружен последним? "
+if pfctl -sr 2>/dev/null | grep -qE 'block.*out quick inet all'; then echo "ДА ✓"; else echo "НЕТ ✗"; fi
 
 sleep 1
 # cleanup() runs automatically on exit and restores the internet

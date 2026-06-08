@@ -73,6 +73,37 @@ final class PFRulesetManagerTests: XCTestCase {
                       "the tunnel interface is trusted without state so mid-stream packets pass")
     }
 
+    /// R19 backstop: a final `block out quick inet all` must exist AND come after the Apple anchor,
+    /// so a non-quick `pass` injected into com.apple can't become the last matching rule and leak
+    /// the real IP. pf applies the last matching (non-quick) rule, so order here is the whole point.
+    func testAppleAnchorLeakBackstop() {
+        let r = PFRulesetManager.makeRuleset(serverAddresses: ["89.106.86.61"], lanAllowed: true,
+                                             tunnelInterfaces: ["utun7"])
+        XCTAssertTrue(r.contains("block out quick inet all"), "the R19 outbound backstop must be present")
+        guard let anchorIndex = r.range(of: "anchor \"com.apple/*\""),
+              let backstopIndex = r.range(of: "block out quick inet all") else {
+            return XCTFail("both the Apple anchor and the backstop must be present")
+        }
+        XCTAssertLessThan(anchorIndex.lowerBound, backstopIndex.lowerBound,
+                          "the backstop must come AFTER the Apple anchor, or it can't override an anchor leak")
+    }
+
+    /// The backstop must not shadow our own traffic: the utun/server/LAN passes are `quick`, so they
+    /// appear before the backstop and match first.
+    func testBackstopDoesNotPrecedeOurQuickPasses() {
+        let r = PFRulesetManager.makeRuleset(serverAddresses: ["89.106.86.61"], lanAllowed: true,
+                                             tunnelInterfaces: ["utun7"])
+        guard let serverPass = r.range(of: "pass out quick inet from any to <servers> no state"),
+              let utunPass = r.range(of: "pass quick on utun7 all no state"),
+              let lanPass = r.range(of: "pass quick inet from any to <lan>"),
+              let backstop = r.range(of: "block out quick inet all") else {
+            return XCTFail("all passes and the backstop must be present")
+        }
+        XCTAssertLessThan(serverPass.lowerBound, backstop.lowerBound)
+        XCTAssertLessThan(utunPass.lowerBound, backstop.lowerBound)
+        XCTAssertLessThan(lanPass.lowerBound, backstop.lowerBound)
+    }
+
     /// An empty server list → table with no entries, but default-deny still in place.
     func testEmptyServersStillDeclaresTable() {
         let r = PFRulesetManager.makeRuleset(serverAddresses: [], lanAllowed: false)

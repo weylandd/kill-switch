@@ -103,8 +103,19 @@ public final class PFRulesetManager {
         table <lan> const { 10/8, 172.16/12, 192.168/16, 169.254/16 }
         \(lanPass)
 
-        # Preserve Apple's system anchors — AirDrop, sharing (R19).
+        # Apple's system anchors (AirDrop, sharing). Kept so Apple's own `pass quick` rules still
+        # work — but see the backstop right below. pf applies the LAST matching rule for non-quick
+        # rules, and this anchor is evaluated AFTER our "block out all": a non-quick `pass` injected
+        # here would become the last match and override default-deny, leaking the real IP on the
+        # physical link (R19).
         anchor "com.apple/*"
+
+        # R19 backstop: slam the outbound door after the Apple anchor. Anything that fell through
+        # every `quick` pass above and was let out only by a non-quick rule inside com.apple is
+        # blocked here, since this is now the last matching rule. Our own traffic is unaffected —
+        # the utun/server/LAN passes are `quick` and match earlier. Outbound IPv4 only; IPv6 is
+        # already fully blocked above. (Apple's quick passes, e.g. AirDrop, are preserved.)
+        block out quick inet all
         """
         // A trailing newline is required: pfctl treats an unterminated last line as a
         // syntax error.
