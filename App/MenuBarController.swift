@@ -13,6 +13,8 @@ final class MenuBarController: ObservableObject {
     @Published var manualAddress: String = ""
     @Published var manualError: String?
     @Published var lastError: String?
+    /// True while the privileged emergency OFF is running (its admin-password dialog is up).
+    @Published var isEmergencyRunning = false
 
     private let client = XPCClient()
     private var pollTask: Task<Void, Never>?
@@ -67,6 +69,25 @@ final class MenuBarController: ObservableObject {
         Task {
             let (ok, err) = await client.setProtection(enabled: on)
             if !ok { lastError = err }
+            await refresh()
+        }
+    }
+
+    /// Break-glass emergency OFF (KTD7). Bypasses the daemon entirely and restores the internet by
+    /// driving PF directly with root (one admin-password prompt). This is the guaranteed escape when
+    /// the daemon is hung/dead and the normal switch above can't reach it.
+    func emergencyOff() {
+        guard !isEmergencyRunning else { return }
+        Task {
+            isEmergencyRunning = true
+            // run() blocks on the system auth dialog — keep it off the main actor.
+            let outcome = await Task.detached { EmergencyOff.run() }.value
+            isEmergencyRunning = false
+            switch outcome {
+            case .restored:  lastError = nil
+            case .cancelled: break                        // user dismissed the prompt; nothing changed
+            case .failed(let msg): lastError = "Аварийный сброс: \(msg)"
+            }
             await refresh()
         }
     }

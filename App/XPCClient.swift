@@ -61,29 +61,45 @@ public final class XPCClient {
     }
 
     /// Bridge a `(Data?) -> Void` reply (status/candidates) into async, returning nil if the
-    /// daemon is unreachable.
-    private func withData(_ call: @escaping (KillSwitchDaemonProtocol, @escaping (Data?) -> Void) -> Void) async -> Data? {
+    /// daemon is unreachable or doesn't answer within `timeout`.
+    private func withData(timeout: TimeInterval = 4,
+                          _ call: @escaping (KillSwitchDaemonProtocol, @escaping (Data?) -> Void) -> Void) async -> Data? {
         await withCheckedContinuation { cont in
+            // `finish` can be called from XPC's queue, the error handler, or the timeout queue —
+            // guard the one-shot resume with a lock so concurrent callers can't double-resume.
+            let gate = NSLock()
             var resumed = false
             let finish: (Data?) -> Void = { data in
+                gate.lock(); defer { gate.unlock() }
                 guard !resumed else { return }
                 resumed = true
                 cont.resume(returning: data)
             }
+            // A hung daemon may accept the connection yet never invoke the reply; without this the
+            // continuation would never resume and the UI call would hang forever.
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { finish(nil) }
             guard let proxy = proxy(errorHandler: { _ in finish(nil) }) else { return finish(nil) }
             call(proxy, finish)
         }
     }
 
-    /// Bridge a `(Bool, String?) -> Void` reply (mutations) into async. An unreachable daemon
-    /// surfaces as (false, message) rather than hanging.
-    private func withResult(_ call: @escaping (KillSwitchDaemonProtocol, @escaping (Bool, String?) -> Void) -> Void) async -> (Bool, String?) {
+    /// Bridge a `(Bool, String?) -> Void` reply (mutations) into async. An unreachable or
+    /// unresponsive daemon surfaces as (false, message) rather than hanging.
+    private func withResult(timeout: TimeInterval = 4,
+                            _ call: @escaping (KillSwitchDaemonProtocol, @escaping (Bool, String?) -> Void) -> Void) async -> (Bool, String?) {
         await withCheckedContinuation { cont in
+            let gate = NSLock()
             var resumed = false
             let finish: (Bool, String?) -> Void = { ok, err in
+                gate.lock(); defer { gate.unlock() }
                 guard !resumed else { return }
                 resumed = true
                 cont.resume(returning: (ok, err))
+            }
+            // If the daemon is hung, fail fast so the UI can offer the emergency OFF instead of
+            // spinning on a switch that never resolves.
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+                finish(false, "Служба не отвечает")
             }
             guard let proxy = proxy(errorHandler: { err in finish(false, "Нет связи со службой: \(err.localizedDescription)") }) else {
                 return finish(false, "Нет связи со службой")

@@ -56,13 +56,29 @@ struct ControlPanelView: View {
         }
     }
 
-    // Daemon approved but not answering.
+    // Daemon approved but not answering. The internet may be blocked with no way to reach the
+    // daemon — so the break-glass emergency OFF is the most important control here.
     private var unreachableSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Не удаётся связаться со службой защиты. Защита может ещё работать, но управлять ей сейчас нельзя.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Button("Повторить") { Task { await controller.refresh() } }
             Button("Открыть Системные настройки") { controller.openSettings() }
+            Divider()
+            emergencyButton
+        }
+    }
+
+    // Guaranteed escape hatch (KTD7): always restores the internet, even if the daemon is hung or
+    // dead, by resetting PF directly with the user's admin password.
+    private var emergencyButton: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button(role: .destructive) { controller.emergencyOff() } label: {
+                Label("Аварийное выключение", systemImage: "exclamationmark.octagon.fill")
+            }
+            .disabled(controller.isEmergencyRunning)
+            Text("Сбросит фаервол напрямую и вернёт интернет, даже если служба зависла. Спросит пароль администратора.")
+                .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -92,6 +108,9 @@ struct ControlPanelView: View {
             if let lastError = controller.lastError {
                 Text(lastError).font(.caption).foregroundStyle(.red)
             }
+
+            Divider()
+            emergencyButton
         }
     }
 }
