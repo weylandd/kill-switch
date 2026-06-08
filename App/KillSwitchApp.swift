@@ -16,9 +16,10 @@ struct KillSwitchApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        // Connection requests live in their own window so they don't crowd the control panel.
-        Window("Запросы на подключение", id: AppWindow.requests) {
-            PermissionRequestsWindow(controller: controller)
+        // Requests and the allowed-servers list live in their own window so they don't crowd the
+        // control panel.
+        Window("Серверы и запросы", id: AppWindow.details) {
+            DetailsWindow(controller: controller)
         }
         .windowResizability(.contentSize)
     }
@@ -107,14 +108,7 @@ struct ControlPanelView: View {
                 .toggleStyle(.switch)
 
             Divider()
-            PermissionRequestsButton(controller: controller)
-
-            Divider()
-            ServersListView(servers: controller.servers,
-                            manualAddress: $controller.manualAddress,
-                            manualError: controller.manualError,
-                            onAdd: controller.addManual,
-                            onRemove: controller.remove)
+            DetailsButton(controller: controller)
 
             if let lastError = controller.lastError {
                 Text(lastError).font(.caption).foregroundStyle(.red)

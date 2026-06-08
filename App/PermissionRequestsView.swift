@@ -4,24 +4,24 @@ import KillSwitchShared
 
 /// Identifiers for the app's auxiliary windows (opened via `openWindow`).
 enum AppWindow {
-    static let requests = "permission-requests"
+    static let details = "details"
 }
 
-/// Compact entry in the control panel: opens the connection-requests window and shows how many
-/// requests are waiting, so the list no longer crowds the main panel.
-struct PermissionRequestsButton: View {
+/// Compact entry in the control panel: opens the details window (requests + allowed servers) and
+/// shows how many requests are waiting, so neither list crowds the main panel.
+struct DetailsButton: View {
     @ObservedObject var controller: MenuBarController
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Button {
-            openWindow(id: AppWindow.requests)
+            openWindow(id: AppWindow.details)
             // This is an LSUIElement (menu-bar-only) app, so a freshly opened window does not come
             // forward on its own — activate the app to bring it to the front.
             NSApp.activate(ignoringOtherApps: true)
         } label: {
             HStack {
-                Label("Запросы на подключение", systemImage: "bell.badge")
+                Label("Серверы и запросы", systemImage: "list.bullet.rectangle")
                 Spacer()
                 if !controller.candidates.isEmpty {
                     Text("\(controller.candidates.count)")
@@ -35,21 +35,31 @@ struct PermissionRequestsButton: View {
     }
 }
 
-/// The connection-requests list shown in its own window (separate from the control panel).
-struct PermissionRequestsWindow: View {
+/// The connection-requests list and the allowed-servers list, shown in their own window so the
+/// control panel stays small (just status, toggles, and the emergency button).
+struct DetailsWindow: View {
     @ObservedObject var controller: MenuBarController
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Запросы на подключение").font(.title3).bold()
-            Text("Когда VPN-клиент пытается выйти на новый сервер напрямую, он появляется здесь. Разрешите свой сервер — остальное останется заблокированным.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Divider()
-            PermissionRequestsView(candidates: controller.candidates, onAllow: controller.allow)
-            Spacer(minLength: 0)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Серверы и запросы").font(.title3).bold()
+
+                Text("Когда VPN-клиент пытается выйти на новый сервер напрямую, он появляется здесь. Разрешите свой сервер — остальное останется заблокированным.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                PermissionRequestsView(candidates: controller.candidates, onAllow: controller.allow)
+
+                Divider()
+
+                ServersListView(servers: controller.servers,
+                                manualAddress: $controller.manualAddress,
+                                manualError: controller.manualError,
+                                onAdd: controller.addManual,
+                                onRemove: controller.remove)
+            }
+            .padding(16)
         }
-        .padding(16)
-        .frame(width: 380, height: 340)
+        .frame(width: 420, height: 520)
     }
 }
 
