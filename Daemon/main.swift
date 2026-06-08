@@ -58,10 +58,16 @@ xpc.resume()
 // user explicitly prefers fail-open over any lockout risk.
 let sigterm = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 sigterm.setEventHandler {
-    // Restore the system default ruleset (not just `pfctl -d`): otherwise our block-all rules stay
-    // loaded in the kernel after we exit and re-block everything the next time PF is enabled (on
-    // wake, or by a VPN client), with no daemon left to undo it.
+    // Order matters to avoid a lockout: (1) stop the watchdog so no reconcile can fire after we
+    // restore, (2) take the shared lock so any in-flight watchdog/command op finishes first, then
+    // (3) restore the system default ruleset (not just `pfctl -d`) — otherwise our block-all rules
+    // stay loaded in the kernel after we exit and re-block everything the next time PF is enabled
+    // (on wake, or by a VPN client), with no daemon left to undo it. Without (1)+(2) the watchdog
+    // could re-enable our rules in the window between restore and exit, stranding the user.
+    watchdog.stop()
+    pfLock.lock()
     try? pf.restoreSystemDefault()
+    pfLock.unlock()
     FileHandle.standardError.write(Data("[\(KillSwitchConfig.daemonLabel)] SIGTERM — restored default ruleset, exiting\n".utf8))
     exit(EXIT_SUCCESS)
 }

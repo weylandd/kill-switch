@@ -11,7 +11,6 @@ struct KillSwitchApp: App {
     var body: some Scene {
         MenuBarExtra {
             ControlPanelView(controller: controller)
-                .onAppear { controller.startPolling() }
         } label: {
             Image(systemName: controller.menuBarSymbol)
         }

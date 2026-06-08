@@ -17,6 +17,12 @@ final class MenuBarController: ObservableObject {
     private let client = XPCClient()
     private var pollTask: Task<Void, Never>?
 
+    init() {
+        // Start polling at construction (the controller lives for the whole app), so the menu-bar
+        // icon reflects state immediately — not only after the user first opens the window.
+        startPolling()
+    }
+
     // MARK: - Derived presentation
 
     /// Whether SMAppService reports the daemon as approved and active.
@@ -32,19 +38,15 @@ final class MenuBarController: ObservableObject {
 
     // MARK: - Polling
 
-    func startPolling() {
+    private func startPolling() {
         guard pollTask == nil else { return }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.refresh()
+                guard let self else { return }   // controller gone → stop the loop (don't spin)
+                await self.refresh()
                 try? await Task.sleep(nanoseconds: 2_000_000_000)   // 2s
             }
         }
-    }
-
-    func stopPolling() {
-        pollTask?.cancel()
-        pollTask = nil
     }
 
     func refresh() async {
@@ -71,7 +73,8 @@ final class MenuBarController: ObservableObject {
 
     func setLAN(_ on: Bool) {
         Task {
-            _ = await client.setLANAccess(allowed: on)
+            let (ok, err) = await client.setLANAccess(allowed: on)
+            if !ok { lastError = err }
             await refresh()
         }
     }
@@ -88,7 +91,8 @@ final class MenuBarController: ObservableObject {
 
     func remove(_ server: ServerRule) {
         Task {
-            _ = await client.removeServer(address: server.address)
+            let (ok, err) = await client.removeServer(address: server.address)
+            if !ok { lastError = err }
             await refresh()
         }
     }

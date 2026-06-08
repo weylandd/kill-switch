@@ -64,7 +64,9 @@ public enum StatusPresentation {
     /// user isn't left guessing why a new connection is blocked.
     public static func menuBarSymbol(state: ProtectionState, hasNewCandidate: Bool) -> String {
         if hasNewCandidate && (state == .protectedTunnelUp || state == .protectedTunnelDown) {
-            return "shield.lefthalf.filled.badge.checkmark"
+            // "there's a pending approval request". Must exist on the macOS 13 deployment target —
+            // shield.*.badge.* variants are macOS 14+ and would render blank on 13.
+            return "bell.badge.fill"
         }
         return state.iconSymbolName
     }

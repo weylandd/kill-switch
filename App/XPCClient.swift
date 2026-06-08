@@ -50,8 +50,10 @@ public final class XPCClient {
         if connection == nil {
             let c = NSXPCConnection(machServiceName: KillSwitchConfig.machServiceName, options: .privileged)
             c.remoteObjectInterface = NSXPCInterface(with: KillSwitchDaemonProtocol.self)
-            c.invalidationHandler = { [weak self] in self?.connection = nil }
-            c.interruptionHandler = { [weak self] in self?.connection = nil }
+            // XPC invokes these on its own queue; hop to main so `connection` is only ever mutated
+            // on the main thread (where `proxy()` reads it), avoiding a data race.
+            c.invalidationHandler = { [weak self] in DispatchQueue.main.async { self?.connection = nil } }
+            c.interruptionHandler = { [weak self] in DispatchQueue.main.async { self?.connection = nil } }
             c.resume()
             connection = c
         }

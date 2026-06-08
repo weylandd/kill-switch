@@ -27,7 +27,8 @@ public final class Watchdog {
     private var lastApplied: String?
 
     // Shared with CommandHandler so a watchdog reload can never interleave with a user disarm.
-    private let applyLock: NSLock?
+    // Non-optional on purpose: forgetting to pass it is a compile error, not a silent safety hole.
+    private let applyLock: NSLock
 
     /// - Parameters:
     ///   - pf: the PF engine to inspect and, if needed, reinstall.
@@ -40,7 +41,7 @@ public final class Watchdog {
                 stateProvider: @escaping () -> PersistedState,
                 interval: TimeInterval = 5,
                 initialRuleset: String? = nil,
-                lock: NSLock? = nil,
+                lock: NSLock = NSLock(),
                 log: @escaping (String) -> Void = Watchdog.defaultLog) {
         self.pf = pf
         self.stateProvider = stateProvider
@@ -81,7 +82,7 @@ public final class Watchdog {
     public func reconcile() -> Bool {
         // Hold the shared lock for the whole read-decide-apply so a disarm can't land mid-flight
         // and get overridden by our reload.
-        applyLock?.lock(); defer { applyLock?.unlock() }
+        applyLock.lock(); defer { applyLock.unlock() }
 
         let state = stateProvider()
 

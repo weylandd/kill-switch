@@ -204,7 +204,10 @@ public final class PFRulesetManager {
         }
     }
 
-    private func exec(_ launchPath: String, _ args: [String]) throws -> (status: Int32, output: String) {
+    /// Run a subprocess with a bounded timeout. A hung `/dev/pf` (sleep/wake, kernel issue) must not
+    /// block the daemon forever — that would freeze the watchdog (which holds the shared lock) and
+    /// make the OFF path unresponsive. On timeout the process is terminated and an error is thrown.
+    private func exec(_ launchPath: String, _ args: [String], timeout: TimeInterval = 10) throws -> (status: Int32, output: String) {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: launchPath)
         proc.arguments = args
@@ -212,7 +215,22 @@ public final class PFRulesetManager {
         proc.standardOutput = pipe
         proc.standardError = pipe
         try proc.run()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+
+        // Read output on a background queue so a full pipe buffer can't deadlock the wait.
+        let group = DispatchGroup()
+        group.enter()
+        var data = Data()
+        DispatchQueue.global().async {
+            data = pipe.fileHandleForReading.readDataToEndOfFile()
+            group.leave()
+        }
+
+        if group.wait(timeout: .now() + timeout) == .timedOut {
+            proc.terminate()                       // closes the pipe → the read above unblocks
+            _ = group.wait(timeout: .now() + 2)
+            throw PFError.commandFailed(command: "\(launchPath) \(args.joined(separator: " "))",
+                                        status: -1, output: "timed out after \(Int(timeout))s")
+        }
         proc.waitUntilExit()
         return (proc.terminationStatus, String(data: data, encoding: .utf8) ?? "")
     }
