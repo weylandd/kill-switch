@@ -15,6 +15,8 @@ final class MenuBarController: ObservableObject {
     @Published var lastError: String?
     /// True while the privileged emergency OFF is running (its admin-password dialog is up).
     @Published var isEmergencyRunning = false
+    /// True while a manual "retry connection" is in flight, so the button can show feedback.
+    @Published var isCheckingConnection = false
 
     private let client = XPCClient()
     private var pollTask: Task<Void, Never>?
@@ -68,6 +70,20 @@ final class MenuBarController: ObservableObject {
         if s != nil {
             candidates = await client.fetchCandidates()
             servers = await client.fetchServers()
+        }
+    }
+
+    /// Manual "Повторить" on the unreachable screen: force a brand-new connection (the cached one is
+    /// dead if it was built while the daemon was down) and re-check, with on-screen feedback so the
+    /// button is never a silent no-op. The 2s poll also recovers on its own now, but an explicit
+    /// retry should feel responsive.
+    func retryConnection() {
+        guard !isCheckingConnection else { return }
+        Task {
+            isCheckingConnection = true
+            client.reset()
+            await refresh()
+            isCheckingConnection = false
         }
     }
 

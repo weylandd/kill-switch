@@ -15,6 +15,12 @@ struct KillSwitchApp: App {
             Image(systemName: controller.menuBarSymbol)
         }
         .menuBarExtraStyle(.window)
+
+        // Connection requests live in their own window so they don't crowd the control panel.
+        Window("Запросы на подключение", id: AppWindow.requests) {
+            PermissionRequestsWindow(controller: controller)
+        }
+        .windowResizability(.contentSize)
     }
 }
 
@@ -64,7 +70,10 @@ struct ControlPanelView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Не удаётся связаться со службой защиты. Защита может ещё работать, но управлять ей сейчас нельзя.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Button("Повторить") { Task { await controller.refresh() } }
+            Button(controller.isCheckingConnection ? "Проверяю связь…" : "Повторить") {
+                controller.retryConnection()
+            }
+            .disabled(controller.isCheckingConnection)
             Button("Открыть Системные настройки") { controller.openSettings() }
             Divider()
             emergencyButton
@@ -98,7 +107,7 @@ struct ControlPanelView: View {
                 .toggleStyle(.switch)
 
             Divider()
-            PermissionRequestsView(candidates: controller.candidates, onAllow: controller.allow)
+            PermissionRequestsButton(controller: controller)
 
             Divider()
             ServersListView(servers: controller.servers,

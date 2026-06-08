@@ -60,26 +60,51 @@ public final class XPCClient {
         return connection?.remoteObjectProxyWithErrorHandler(errorHandler) as? KillSwitchDaemonProtocol
     }
 
+    /// Tear down the current connection so the next call builds a fresh one.
+    ///
+    /// Critical for recovery: a connection created while the daemon was down (its Mach service not
+    /// registered in launchd) is dead permanently — XPC does NOT re-resolve the service on an
+    /// existing connection when the daemon later returns, and its invalidationHandler does not
+    /// always fire on a plain failed call. Without resetting, every retry and the 2s poll reuse the
+    /// same dead connection, so the app stays "unreachable" until it is relaunched. Resetting on any
+    /// failure makes the app heal on its own once the daemon is back.
+    public func reset() {
+        let c = connection
+        connection = nil          // next proxy() builds a fresh connection
+        c?.invalidate()
+    }
+
+    /// Same as `reset()` but safe to call from XPC/timeout queues: hops to main, where `connection`
+    /// is exclusively accessed.
+    private func resetOnMain() {
+        DispatchQueue.main.async { [weak self] in self?.reset() }
+    }
+
     /// Bridge a `(Data?) -> Void` reply (status/candidates) into async, returning nil if the
     /// daemon is unreachable or doesn't answer within `timeout`.
     private func withData(timeout: TimeInterval = 4,
                           _ call: @escaping (KillSwitchDaemonProtocol, @escaping (Data?) -> Void) -> Void) async -> Data? {
         await withCheckedContinuation { cont in
-            // `finish` can be called from XPC's queue, the error handler, or the timeout queue —
-            // guard the one-shot resume with a lock so concurrent callers can't double-resume.
+            // `resolve` can be called from XPC's queue, the error handler, or the timeout queue —
+            // guard the one-shot resume with a lock so concurrent callers can't double-resume. On a
+            // FAILURE resolution it also drops the (possibly dead) connection so the next call
+            // rebuilds; a SUCCESS resolution must not, or it would tear down a healthy connection
+            // 4s later when the timeout fires.
             let gate = NSLock()
             var resumed = false
-            let finish: (Data?) -> Void = { data in
-                gate.lock(); defer { gate.unlock() }
-                guard !resumed else { return }
+            let resolve: (Data?, _ failed: Bool) -> Void = { data, failed in
+                gate.lock()
+                guard !resumed else { gate.unlock(); return }
                 resumed = true
+                gate.unlock()
+                if failed { self.resetOnMain() }
                 cont.resume(returning: data)
             }
             // A hung daemon may accept the connection yet never invoke the reply; without this the
             // continuation would never resume and the UI call would hang forever.
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { finish(nil) }
-            guard let proxy = proxy(errorHandler: { _ in finish(nil) }) else { return finish(nil) }
-            call(proxy, finish)
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { resolve(nil, true) }
+            guard let proxy = proxy(errorHandler: { _ in resolve(nil, true) }) else { return resolve(nil, true) }
+            call(proxy) { data in resolve(data, false) }
         }
     }
 
@@ -88,23 +113,27 @@ public final class XPCClient {
     private func withResult(timeout: TimeInterval = 4,
                             _ call: @escaping (KillSwitchDaemonProtocol, @escaping (Bool, String?) -> Void) -> Void) async -> (Bool, String?) {
         await withCheckedContinuation { cont in
+            // One-shot, lock-guarded resume; a FAILURE resolution also drops the connection so the
+            // next call rebuilds, while a SUCCESS resolution leaves the healthy connection intact.
             let gate = NSLock()
             var resumed = false
-            let finish: (Bool, String?) -> Void = { ok, err in
-                gate.lock(); defer { gate.unlock() }
-                guard !resumed else { return }
+            let resolve: (Bool, String?, _ failed: Bool) -> Void = { ok, err, failed in
+                gate.lock()
+                guard !resumed else { gate.unlock(); return }
                 resumed = true
+                gate.unlock()
+                if failed { self.resetOnMain() }
                 cont.resume(returning: (ok, err))
             }
             // If the daemon is hung, fail fast so the UI can offer the emergency OFF instead of
             // spinning on a switch that never resolves.
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
-                finish(false, "Служба не отвечает")
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { resolve(false, "Служба не отвечает", true) }
+            guard let proxy = proxy(errorHandler: { err in
+                resolve(false, "Нет связи со службой: \(err.localizedDescription)", true)
+            }) else {
+                return resolve(false, "Нет связи со службой", true)
             }
-            guard let proxy = proxy(errorHandler: { err in finish(false, "Нет связи со службой: \(err.localizedDescription)") }) else {
-                return finish(false, "Нет связи со службой")
-            }
-            call(proxy, finish)
+            call(proxy) { ok, err in resolve(ok, err, false) }
         }
     }
 }
