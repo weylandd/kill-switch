@@ -23,6 +23,16 @@ final class MenuBarController: ObservableObject {
         // Start polling at construction (the controller lives for the whole app), so the menu-bar
         // icon reflects state immediately — not only after the user first opens the window.
         startPolling()
+        ensureLoginItemIfProtectionInstalled()
+    }
+
+    /// If protection is installed (the daemon is approved), make sure THIS control app also launches
+    /// at login. Without it the user can reboot into a fully-blocked network with the daemon running
+    /// but no on-screen way to disarm or run the break-glass — the 2026-06-08 lockout. Self-healing
+    /// on launch covers installs made before this existed and re-adds the app if it was removed.
+    private func ensureLoginItemIfProtectionInstalled() {
+        guard DaemonRegistration.status == .enabled, !AppLoginItem.isEnabled else { return }
+        AppLoginItem.enable()
     }
 
     // MARK: - Derived presentation
@@ -135,6 +145,9 @@ final class MenuBarController: ObservableObject {
 
     func register() {
         _ = DaemonRegistration.register()
+        // Installing protection also makes this control app launch at login, so the disarm toggle
+        // and break-glass are present after a reboot (best-effort — never blocks daemon setup).
+        AppLoginItem.enable()
         Task { await refresh() }
     }
 

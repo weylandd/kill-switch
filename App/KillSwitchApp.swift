@@ -53,6 +53,8 @@ struct ControlPanelView: View {
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Button("Установить / проверить защиту") { controller.register() }
             Button("Открыть Системные настройки") { controller.openSettings() }
+            Text("Приложение будет запускаться автоматически при входе — чтобы кнопки «Выключить защиту» и «Аварийное выключение» были под рукой сразу после перезагрузки.")
+                .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
 

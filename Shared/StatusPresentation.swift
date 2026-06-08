@@ -39,7 +39,7 @@ public extension ProtectionState {
     var detail: String {
         switch self {
         case .protectedTunnelUp:   return "Весь трафик идёт через VPN; всё прочее заблокировано."
-        case .protectedTunnelDown: return "VPN сейчас не подключён, но интернет заблокирован — утечки нет."
+        case .protectedTunnelDown: return "VPN не подключён, поэтому интернет заблокирован (утечки нет). Подключите VPN — или выключите защиту переключателем ниже."
         case .disarmed:            return "Фаервол выключен. Включите защиту, когда будете готовы."
         case .needsApproval:       return "Откройте Системные настройки → «Объекты входа и расширения» и включите KillSwitch."
         case .daemonUnreachable:   return "Не удаётся связаться со службой. Попробуйте ещё раз или переустановите."

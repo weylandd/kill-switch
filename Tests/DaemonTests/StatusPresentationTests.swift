@@ -24,6 +24,18 @@ final class StatusPresentationTests: XCTestCase {
         }
     }
 
+    /// The tunnel-down state is what the user sees on every boot under "always protected" (the
+    /// daemon blocks before the VPN connects). Its detail must be actionable — tell the user how to
+    /// get online or turn protection off — not just reassure that there is no leak. Guards against a
+    /// regression to a dead-end "safe, but blocked" message that sent the user to Terminal.
+    func testTunnelDownDetailGuidesTheUser() {
+        let detail = ProtectionState.protectedTunnelDown.detail
+        XCTAssertTrue(detail.contains("VPN"), "tunnel-down should tell the user to connect their VPN")
+        XCTAssertTrue(detail.lowercased().contains("выключите защиту"),
+                      "tunnel-down should also offer the disarm escape")
+        XCTAssertFalse(ProtectionState.protectedTunnelDown.isExposed, "tunnel-down is safe, not exposed")
+    }
+
     /// The menu-bar icon gains a hint when a request is pending while protected (R24), but not
     /// when disarmed (then the disarm warning already dominates).
     func testNewCandidateHintOnlyWhileProtected() {
