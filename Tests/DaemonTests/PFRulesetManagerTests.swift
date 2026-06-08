@@ -19,30 +19,58 @@ final class PFRulesetManagerTests: XCTestCase {
         XCTAssertTrue(r.contains("block quick inet6 all"), "IPv6 fully blocked (R4)")
     }
 
-    /// Guards the core invariant: `block quick inet6 all` MUST come before `pass quick on
-    /// utun all`, otherwise IPv6 could leak inside the tunnel. Substring-presence tests do
-    /// not catch a reordering, so assert the order explicitly.
+    /// Guards the core invariant: `block quick inet6 all` MUST come before the utun passes,
+    /// otherwise IPv6 could leak inside the tunnel. Substring-presence tests do not catch a
+    /// reordering, so assert the order explicitly.
     func testIPv6BlockComesBeforeUtunPass() {
-        let r = PFRulesetManager.makeRuleset(serverAddresses: ["1.2.3.4"], lanAllowed: true)
+        let r = PFRulesetManager.makeRuleset(serverAddresses: ["1.2.3.4"], lanAllowed: true,
+                                             tunnelInterfaces: ["utun7"])
         guard let ipv6Index = r.range(of: "block quick inet6 all"),
-              let utunIndex = r.range(of: "pass quick on utun all") else {
+              let utunIndex = r.range(of: "pass quick on utun7 all") else {
             return XCTFail("both rules must be present")
         }
         XCTAssertLessThan(ipv6Index.lowerBound, utunIndex.lowerBound,
                           "IPv6 must be blocked before the utun pass, or IPv6 leaks inside the tunnel")
     }
 
-    /// Covers AE7: trust any utun, regardless of which ones are active.
-    func testTrustsAnyUtunInterface() {
-        let r = PFRulesetManager.makeRuleset(serverAddresses: ["89.106.86.61"], lanAllowed: false)
-        XCTAssertTrue(r.contains("pass quick on utun all"))
+    /// Covers AE7 / the macOS-pf fix: each active utun interface gets its OWN pass rule (there is
+    /// no implicit "utun" interface group on macOS, so `pass on utun` would match nothing).
+    func testEachUtunInterfaceGetsItsOwnRule() {
+        let r = PFRulesetManager.makeRuleset(serverAddresses: ["89.106.86.61"], lanAllowed: false,
+                                             tunnelInterfaces: ["utun4", "utun7"])
+        XCTAssertTrue(r.contains("pass quick on utun4 all no state"))
+        XCTAssertTrue(r.contains("pass quick on utun7 all no state"))
+        XCTAssertFalse(r.contains("pass quick on utun all"), "must NOT use the (non-working) utun group")
     }
 
-    /// Servers appear as table entries; the pass rule to the table is present.
+    /// No active tunnel → no utun pass (default-deny stays; nothing to trust yet).
+    func testNoTunnelsLeavesDefaultDeny() {
+        let r = PFRulesetManager.makeRuleset(serverAddresses: [], lanAllowed: false, tunnelInterfaces: [])
+        XCTAssertFalse(r.contains("pass quick on utun"))
+        XCTAssertTrue(r.contains("block out all"))
+    }
+
+    /// Servers appear as table entries; the bidirectional pass rules to/from the table are present.
     func testServersRenderAsTableEntries() {
         let r = PFRulesetManager.makeRuleset(serverAddresses: ["89.106.86.61", "1.2.3.4"], lanAllowed: false)
         XCTAssertTrue(r.contains("table <servers> persist { 89.106.86.61, 1.2.3.4 }"))
-        XCTAssertTrue(r.contains("pass out quick inet proto { tcp udp } from any to <servers>"))
+        XCTAssertTrue(r.contains("pass out quick inet from any to <servers> no state"))
+        XCTAssertTrue(r.contains("pass in quick inet from <servers> to any no state"))
+    }
+
+    /// Regression (2026-06-08): traffic to a whitelisted server must be allowed in BOTH directions
+    /// with NO state tracking. With state tracking, when protection starts on top of an already-open
+    /// VPN, PF drops the server's return packets (out-of-window, handshake never seen) via
+    /// "block in all" — the tunnel half-opens and nothing flows. Confirmed live via PF rule counters
+    /// (142KB inbound blocked, tunnel carried 0). The fix is the inbound pass + no state.
+    func testServerTrafficAllowedBothDirectionsNoState() {
+        let r = PFRulesetManager.makeRuleset(serverAddresses: ["89.106.86.61"], lanAllowed: false,
+                                             tunnelInterfaces: ["utun7"])
+        XCTAssertTrue(r.contains("pass in quick inet from <servers> to any no state"),
+                      "return traffic from the server must be explicitly allowed, or it gets blocked inbound")
+        XCTAssertTrue(r.contains("pass out quick inet from any to <servers> no state"))
+        XCTAssertTrue(r.contains("pass quick on utun7 all no state"),
+                      "the tunnel interface is trusted without state so mid-stream packets pass")
     }
 
     /// An empty server list → table with no entries, but default-deny still in place.

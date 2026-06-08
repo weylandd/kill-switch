@@ -19,8 +19,9 @@ let eventLog = EventLog()
 let journal: (String) -> Void = { eventLog.record($0) }
 
 let bootstrap = DaemonBootstrap(store: store, pf: pf, log: journal)
+let bootRuleset: String
 do {
-    try bootstrap.start()
+    bootRuleset = try bootstrap.start()
 } catch {
     // Exit so launchd (KeepAlive) restarts the daemon and retries full startup.
     // We deliberately do NOT force a block-all here: the user must never end up with no
@@ -34,7 +35,7 @@ do {
 
 // Keep protection from silently staying down if PF is disabled or the rules are flushed (U5).
 // It reads the persisted state on every check, so it never fights an explicit disarm.
-let watchdog = Watchdog(pf: pf, stateProvider: { store.load() }, log: journal)
+let watchdog = Watchdog(pf: pf, stateProvider: { store.load() }, initialRuleset: bootRuleset, log: journal)
 watchdog.start()
 
 // Watch for direct outbound attempts so the app can offer new servers for approval (U6).

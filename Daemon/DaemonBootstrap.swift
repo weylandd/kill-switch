@@ -42,7 +42,8 @@ public final class DaemonBootstrap {
     ///
     /// The daemon ALWAYS boots protected (KTD7, R2): a stored "disarmed" flag does not
     /// survive a reboot — otherwise we would silently boot with the internet open.
-    public func start() throws {
+    @discardableResult
+    public func start() throws -> String {
         let state = store.load()
         let ruleset = try pf.makeRuleset(from: state)
         try pf.load(ruleset)        // default-deny rules loaded before enabling
@@ -61,6 +62,7 @@ public final class DaemonBootstrap {
             }
         }
         log("Protection enabled at startup: \(state.servers.count) server(s), LAN \(state.lanAllowed ? "on" : "off")")
+        return ruleset   // hand the applied ruleset to the watchdog so it knows the current baseline
     }
 
     public static let defaultLog: (String) -> Void = { message in

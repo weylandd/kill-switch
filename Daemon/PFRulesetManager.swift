@@ -27,29 +27,36 @@ public final class PFRulesetManager {
     /// Path where the daemon writes the active ruleset (root-owned).
     public let rulesetURL: URL
     private let pfctlPath: String
+    /// Lists the current utun interfaces (injected for tests; live enumeration in production).
+    private let tunnelInterfaces: () -> [String]
 
     public init(rulesetURL: URL = URL(fileURLWithPath: KillSwitchConfig.stateDirectory).appendingPathComponent("killswitch.pf"),
-                pfctlPath: String = "/sbin/pfctl") {
+                pfctlPath: String = "/sbin/pfctl",
+                tunnelInterfaces: @escaping () -> [String] = NetworkInterfaces.utunNames) {
         self.rulesetURL = rulesetURL
         self.pfctlPath = pfctlPath
+        self.tunnelInterfaces = tunnelInterfaces
     }
 
     // MARK: - Ruleset generation (pure logic, tested without root)
 
     /// Build the full ruleset from state. Throws if a server address is invalid — better to
-    /// reject the apply than to load garbage (priority: never allow a leak).
+    /// reject the apply than to load garbage (priority: never allow a leak). The set of utun
+    /// interfaces is read live here so a freshly-appeared tunnel is covered on the next build.
     public func makeRuleset(from state: PersistedState) throws -> String {
         for server in state.servers where !Self.isValidIPv4(server.address) {
             throw PFError.invalidAddress(server.address)
         }
         return Self.makeRuleset(serverAddresses: state.servers.map(\.address),
-                                lanAllowed: state.lanAllowed)
+                                lanAllowed: state.lanAllowed,
+                                tunnelInterfaces: tunnelInterfaces())
     }
 
     /// Assemble the ruleset text from prepared parts. Rule order matters: `quick` rules
     /// match first, so the IPv6 block and the tunnel/server passes take precedence over
     /// the base "block all".
-    static func makeRuleset(serverAddresses: [String], lanAllowed: Bool) -> String {
+    static func makeRuleset(serverAddresses: [String], lanAllowed: Bool,
+                            tunnelInterfaces: [String] = []) -> String {
         let serversTable = serverAddresses.isEmpty
             ? "table <servers> persist"
             : "table <servers> persist { \(serverAddresses.joined(separator: ", ")) }"
@@ -57,6 +64,12 @@ public final class PFRulesetManager {
         let lanPass = lanAllowed
             ? "pass quick inet from any to <lan>"
             : "# local-network access is off (LAN toggle)"
+
+        // One pass per ACTUAL utun interface — macOS pf has no implicit "utun" interface group, so
+        // `pass on utun` would match nothing and the decrypted tunnel traffic would be blocked.
+        let utunPass = tunnelInterfaces.isEmpty
+            ? "# no active utun tunnels detected — nothing to trust yet"
+            : tunnelInterfaces.map { "pass quick on \($0) all no state" }.joined(separator: "\n")
 
         let ruleset = """
         # KillSwitch managed ruleset — generated automatically (PFRulesetManager).
@@ -72,12 +85,19 @@ public final class PFRulesetManager {
         # IPv6 fully blocked, no exceptions — even inside the tunnel (R4).
         block quick inet6 all
 
-        # Trust traffic inside any utun tunnel (R7, R11).
-        pass quick on utun all
+        # Trust traffic inside each active utun tunnel (R7, R11). `no state` so already-open
+        # connections keep flowing when protection turns on (state tracking would drop mid-stream
+        # packets). Listed per interface because macOS pf has no "utun" interface group.
+        \(utunPass)
 
-        # Allowed servers — dynamic /32 table (R8, R10).
+        # Allowed servers — dynamic /32 table (R8, R10). The server is the trusted VPN transport,
+        # so allow ALL traffic to AND from it, in both directions, with NO state tracking. State
+        # tracking drops the server's RETURN packets whenever PF starts on top of an already-open
+        # tunnel: it never saw the handshake, treats the replies as out-of-window, and blocks them
+        # via "block in all" — the tunnel goes half-open (data out, nothing back) and dies.
         \(serversTable)
-        pass out quick inet proto { tcp udp } from any to <servers>
+        pass out quick inet from any to <servers> no state
+        pass in quick inet from <servers> to any no state
 
         # Local network — enabled by a toggle (R15).
         table <lan> const { 10/8, 172.16/12, 192.168/16, 169.254/16 }

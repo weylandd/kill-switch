@@ -22,18 +22,26 @@ public final class Watchdog {
     private var timer: DispatchSourceTimer?
     private var pathMonitor: NWPathMonitor?
 
+    // The ruleset currently believed to be loaded. When the freshly-built ruleset differs (e.g. a
+    // new utun tunnel appeared and must be trusted), we reload — not only when PF was knocked down.
+    private var lastApplied: String?
+
     /// - Parameters:
     ///   - pf: the PF engine to inspect and, if needed, reinstall.
     ///   - stateProvider: reads the current persisted intent (default: the daemon's StateStore).
     ///   - interval: backstop timer period; kept small because while PF is disabled traffic is
     ///     open until the next check. Tunable at execution time.
+    ///   - initialRuleset: the ruleset the boot path already applied, so the watchdog doesn't
+    ///     needlessly reload on its first tick.
     public init(pf: PFControlling,
                 stateProvider: @escaping () -> PersistedState,
                 interval: TimeInterval = 5,
+                initialRuleset: String? = nil,
                 log: @escaping (String) -> Void = Watchdog.defaultLog) {
         self.pf = pf
         self.stateProvider = stateProvider
         self.interval = interval
+        self.lastApplied = initialRuleset
         self.log = log
     }
 
@@ -63,7 +71,7 @@ public final class Watchdog {
     }
 
     /// Reconcile once. Pure of any scheduling, so it is unit-testable without root.
-    /// Returns true if it had to reinstall protection.
+    /// Returns true if it had to (re)apply protection.
     @discardableResult
     public func reconcile() -> Bool {
         let state = stateProvider()
@@ -71,17 +79,29 @@ public final class Watchdog {
         // Respect an explicit disarm — never re-block after the user turned protection off.
         guard state.protectionEnabled else { return false }
 
+        // Rebuild the ruleset from the current state AND the current tunnels. If a new utun appeared
+        // (VPN connected after boot), `desired` now includes it and differs from what's loaded.
+        let desired: String
+        do {
+            desired = try pf.makeRuleset(from: state)
+        } catch {
+            log("Watchdog: ruleset build failed: \(error)")
+            return false
+        }
+
         let pfOn = pf.isPFEnabled()
         let rulesLoaded = pf.isRulesetLoaded()
-        if pfOn && rulesLoaded { return false }   // healthy — do nothing (no rule thrashing)
+        if pfOn && rulesLoaded && desired == lastApplied {
+            return false   // healthy and up to date — do nothing (no rule thrashing)
+        }
 
-        // Something dropped our protection. Rebuild from the persisted state and reapply,
-        // in the same order as boot: load default-deny rules, then enable.
+        // Reapply in the same order as boot: load rules, then enable.
+        let reason = !pfOn ? "PF was off" : (!rulesLoaded ? "rules were flushed" : "tunnels changed")
         do {
-            let ruleset = try pf.makeRuleset(from: state)
-            try pf.load(ruleset)
+            try pf.load(desired)
             try pf.enable()
-            log("Watchdog: protection was down (pf=\(pfOn), rules=\(rulesLoaded)) — reinstalled")
+            lastApplied = desired
+            log("Watchdog: reapplied protection (\(reason))")
             return true
         } catch {
             log("Watchdog: reinstall failed: \(error)")

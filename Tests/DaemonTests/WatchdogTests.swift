@@ -6,8 +6,8 @@ import KillSwitchShared
 /// or kernel is needed; only the decision logic is exercised here.
 final class WatchdogTests: XCTestCase {
 
-    private func makeWatchdog(pf: FakePF, state: PersistedState) -> Watchdog {
-        Watchdog(pf: pf, stateProvider: { state }, log: { _ in })
+    private func makeWatchdog(pf: FakePF, state: PersistedState, initial: String? = nil) -> Watchdog {
+        Watchdog(pf: pf, stateProvider: { state }, initialRuleset: initial, log: { _ in })
     }
 
     /// Covers AE5: rules were flushed externally (PF still enabled) — the next check reinstalls.
@@ -35,15 +35,33 @@ final class WatchdogTests: XCTestCase {
         XCTAssertTrue(pf.ops.contains(.enable))
     }
 
-    /// Edge — no thrashing: when everything is healthy the watchdog reloads nothing.
-    func testHealthyStateDoesNothing() {
+    /// Edge — no thrashing: when everything is healthy AND the loaded ruleset is current, the
+    /// watchdog reloads nothing.
+    func testHealthyAndCurrentDoesNothing() throws {
         let pf = FakePF()
         pf.enabled = true
         pf.rulesLoaded = true
-        let wd = makeWatchdog(pf: pf, state: PersistedState())
+        let state = PersistedState()
+        let current = try FakePF().makeRuleset(from: state)   // what boot already applied
+        let wd = makeWatchdog(pf: pf, state: state, initial: current)
 
-        XCTAssertFalse(wd.reconcile(), "a healthy state needs no action")
-        XCTAssertTrue(pf.ops.isEmpty, "no rule reloads when nothing is wrong")
+        XCTAssertFalse(wd.reconcile(), "a healthy, up-to-date state needs no action")
+        XCTAssertFalse(pf.ops.contains(.load), "no reload when nothing changed")
+        XCTAssertFalse(pf.ops.contains(.enable), "no re-enable when nothing changed")
+    }
+
+    /// A changed desired ruleset (e.g. a new utun tunnel appeared after boot) is reapplied even
+    /// though PF is up and rules are loaded — otherwise the new tunnel's traffic stays blocked.
+    func testTunnelChangeReloads() throws {
+        let pf = FakePF()
+        pf.enabled = true
+        pf.rulesLoaded = true
+        let state = PersistedState(servers: [ServerRule(address: "1.2.3.4", label: "x")])
+        // Pretend a different (older) ruleset is loaded — stands in for "before the new tunnel".
+        let wd = makeWatchdog(pf: pf, state: state, initial: "servers=OLD;lan=false")
+
+        XCTAssertTrue(wd.reconcile(), "a changed ruleset must be reapplied")
+        XCTAssertTrue(pf.ops.contains(.load))
     }
 
     /// KTD7 / hard requirement: when the user has disarmed, the watchdog must NEVER re-enable
