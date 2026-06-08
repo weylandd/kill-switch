@@ -85,6 +85,15 @@ public final class PFRulesetManager {
         # IPv6 fully blocked, no exceptions — even inside the tunnel (R4).
         block quick inet6 all
 
+        # Always-allowed link-local plumbing so the network can (re)connect even while protection is
+        # on. Without DHCP the machine can't re-acquire an address after sleep / a network change and
+        # stalls on "No Internet"; mDNS lets macOS confirm the link. Safe for a kill-switch: these
+        # stay on the local segment (broadcast / link-local multicast) and never carry the real
+        # public IP off-link. Independent of the LAN toggle, which is about routable LAN access.
+        pass out quick proto udp from any port 68 to any port 67 no state   # DHCP request
+        pass in quick proto udp from any port 67 to any port 68 no state    # DHCP reply
+        pass quick proto udp from any to 224.0.0.251 port 5353 no state     # mDNS/Bonjour discovery
+
         # Trust traffic inside each active utun tunnel (R7, R11). `no state` so already-open
         # connections keep flowing when protection turns on (state tracking would drop mid-stream
         # packets). Listed per interface because macOS pf has no "utun" interface group.

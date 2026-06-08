@@ -122,6 +122,21 @@ final class PFRulesetManagerTests: XCTestCase {
         XCTAssertTrue(on.contains("table <lan> const"))
     }
 
+    /// DHCP and mDNS are always allowed — regardless of the LAN toggle — so the link can re-acquire
+    /// connectivity after sleep/network changes while protection is on. They must also be `quick`
+    /// (so they win over default-deny) and present even with no servers/tunnels configured.
+    func testDHCPAndMDNSAlwaysAllowedIndependentOfLAN() {
+        for lan in [true, false] {
+            let r = PFRulesetManager.makeRuleset(serverAddresses: [], lanAllowed: lan, tunnelInterfaces: [])
+            XCTAssertTrue(r.contains("pass out quick proto udp from any port 68 to any port 67"),
+                          "DHCP request must always be allowed (LAN=\(lan))")
+            XCTAssertTrue(r.contains("pass in quick proto udp from any port 67 to any port 68"),
+                          "DHCP reply must always be allowed (LAN=\(lan))")
+            XCTAssertTrue(r.contains("pass quick proto udp from any to 224.0.0.251 port 5353"),
+                          "mDNS must always be allowed (LAN=\(lan))")
+        }
+    }
+
     /// An invalid server address is rejected during generation (garbage never reaches the rules).
     func testInvalidServerAddressRejected() {
         let mgr = PFRulesetManager()
