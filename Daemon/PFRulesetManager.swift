@@ -176,18 +176,14 @@ public final class PFRulesetManager {
 
     /// Whether our managed ruleset is loaded (for the watchdog).
     ///
-    /// Our ruleset always contains a distinctive `pass ... on utun ...` rule that the default
-    /// macOS PF configuration does not. If the rules were flushed (`pfctl -F rules` / `-F all`)
-    /// the listing no longer contains it, so we treat that as "our protection is gone" and the
-    /// watchdog reinstalls it. Checking the rules (not just the persistent `<servers>` table)
-    /// matters because `pfctl -F rules` drops the block rules while leaving the table behind.
-    ///
-    /// NOTE: pfctl normalizes rule text on output (it may insert `drop`, `flags any`, etc.), so
-    /// the exact match must be confirmed on a real machine (see
-    /// docs/review-followups-stage-a.md). We deliberately match a stable substring.
+    /// We match the `<servers>` table reference in the rules: our pass rules to/from `<servers>`
+    /// are ALWAYS present (the default macOS PF configuration has no such table), regardless of how
+    /// many utun tunnels are up. Matching the utun rules instead would falsely report "not loaded"
+    /// at boot before any VPN has connected (no utun yet), making the watchdog thrash. If the rules
+    /// were flushed (`pfctl -F rules` / `-F all`), the reference disappears and we reinstall.
     public func isRulesetLoaded() -> Bool {
         guard let result = try? exec(pfctlPath, ["-sr"]), result.status == 0 else { return false }
-        return result.output.contains("on utun")
+        return result.output.contains("<servers>")
     }
 
     // MARK: - Internals

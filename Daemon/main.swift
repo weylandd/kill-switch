@@ -35,14 +35,19 @@ do {
 
 // Keep protection from silently staying down if PF is disabled or the rules are flushed (U5).
 // It reads the persisted state on every check, so it never fights an explicit disarm.
-let watchdog = Watchdog(pf: pf, stateProvider: { store.load() }, initialRuleset: bootRuleset, log: journal)
+// One lock shared by the watchdog and the command handler so a user disarm can never be overridden
+// by a concurrent watchdog reload.
+let pfLock = NSLock()
+
+let watchdog = Watchdog(pf: pf, stateProvider: { store.load() },
+                        initialRuleset: bootRuleset, lock: pfLock, log: journal)
 watchdog.start()
 
 // Watch for direct outbound attempts so the app can offer new servers for approval (U6).
 observer.start()
 
 // Serve the menu-bar app: status, allow/remove server, protection on/off, LAN toggle (U7).
-let handler = CommandHandler(store: store, pf: pf, candidates: observer, log: journal)
+let handler = CommandHandler(store: store, pf: pf, candidates: observer, lock: pfLock, log: journal)
 let xpc = XPCService(handler: handler)
 xpc.resume()
 

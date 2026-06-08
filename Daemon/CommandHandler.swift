@@ -16,18 +16,22 @@ public final class CommandHandler {
     /// How recently a server connection counts as "tunnel up".
     private let tunnelActiveWindow: TimeInterval
 
-    // Serialize mutations so two commands don't interleave saves/kernel updates.
-    private let lock = NSLock()
+    // Serialize PF mutations. Shared with the Watchdog so a disarm can never interleave with a
+    // watchdog reload — otherwise the watchdog could re-enable protection right after the user
+    // turned it off (it read the old "enabled" state just before the disarm landed).
+    private let lock: NSLock
 
     public init(store: StateStore,
                 pf: PFControlling,
                 candidates: CandidateProviding,
                 tunnelActiveWindow: TimeInterval = 30,
+                lock: NSLock = NSLock(),
                 log: @escaping (String) -> Void = CommandHandler.defaultLog) {
         self.store = store
         self.pf = pf
         self.candidates = candidates
         self.tunnelActiveWindow = tunnelActiveWindow
+        self.lock = lock
         self.log = log
     }
 

@@ -26,6 +26,9 @@ public final class Watchdog {
     // new utun tunnel appeared and must be trusted), we reload — not only when PF was knocked down.
     private var lastApplied: String?
 
+    // Shared with CommandHandler so a watchdog reload can never interleave with a user disarm.
+    private let applyLock: NSLock?
+
     /// - Parameters:
     ///   - pf: the PF engine to inspect and, if needed, reinstall.
     ///   - stateProvider: reads the current persisted intent (default: the daemon's StateStore).
@@ -37,11 +40,13 @@ public final class Watchdog {
                 stateProvider: @escaping () -> PersistedState,
                 interval: TimeInterval = 5,
                 initialRuleset: String? = nil,
+                lock: NSLock? = nil,
                 log: @escaping (String) -> Void = Watchdog.defaultLog) {
         self.pf = pf
         self.stateProvider = stateProvider
         self.interval = interval
         self.lastApplied = initialRuleset
+        self.applyLock = lock
         self.log = log
     }
 
@@ -74,6 +79,10 @@ public final class Watchdog {
     /// Returns true if it had to (re)apply protection.
     @discardableResult
     public func reconcile() -> Bool {
+        // Hold the shared lock for the whole read-decide-apply so a disarm can't land mid-flight
+        // and get overridden by our reload.
+        applyLock?.lock(); defer { applyLock?.unlock() }
+
         let state = stateProvider()
 
         // Respect an explicit disarm — never re-block after the user turned protection off.
