@@ -176,6 +176,10 @@ non-`quick` `pass` inside that anchor becomes the last match and overrides defau
 physical NIC. Fix: end with a backstop `block out quick inet all` *after* the anchor (Apple's own
 `quick` passes, e.g. AirDrop, still work; everything else outbound is slammed shut). Mullvad sidesteps
 this entirely by loading rules into its *own* named anchor and not trusting the broad Apple anchor.
+*Verified live (2026-06-08):* on a stock Mac `pfctl -a 'com.apple/*' -sr` was **empty** (no leak
+from the anchor there), and the backstop loaded as the last rule — so the fix both closes the
+present path and future-proofs against macOS populating the anchor (e.g. when Internet Sharing is
+enabled).
 
 **Always-allow link-local plumbing.** Mullvad's "always-allowed exceptions" are loopback, DHCP, and
 NDP. Without DHCP (and mDNS) a PF kill-switch commonly fails to reconnect after sleep / a Wi-Fi
@@ -198,6 +202,24 @@ The robust escape does not talk to the daemon at all: from the unprivileged app,
 Apple-events entitlement is needed under the hardened runtime. Order matters: stop the daemon first,
 then flush, or the watchdog reinstalls the rules in the gap. Also give the app's XPC calls a short
 timeout so a hung daemon fails fast instead of spinning the UI.
+
+The whole privileged action is one argv (no shell quoting on the app side); discard the subprocess's
+stdout so an undrained pipe can't stall the escape path:
+
+```swift
+let shell = "/bin/launchctl bootout system/\(label) 2>/dev/null; "
+          + "/sbin/pfctl -f /etc/pf.conf 2>/dev/null; /sbin/pfctl -d 2>/dev/null; exit 0"
+let proc = Process()
+proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+proc.arguments = ["-e", "do shell script \"\(shell)\" with administrator privileges"]
+proc.standardOutput = FileHandle.nullDevice    // never read → must not be a pipe that can fill
+// terminationStatus 0 = restored; stderr containing "-128"/"User canceled" = user dismissed the prompt
+```
+
+*Verified live (2026-06-08):* with the daemon frozen via `killall -STOP`, the app's normal toggle
+correctly surfaced "service unreachable" (the 4s XPC timeout firing), and the break-glass button
+restored the internet — the SIGSTOPped daemon was force-removed by `launchctl bootout` (SIGKILL) and
+PF flushed, exactly the hung-daemon case the hard requirement demands.
 
 **Boot-time leak window is unavoidable on macOS.** Even Mullvad can't fully close it (macOS won't let
 a daemon start before the network); their guidance is literally "disconnect the network before
