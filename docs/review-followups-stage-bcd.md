@@ -8,18 +8,35 @@ MVP. Listed so they aren't forgotten.
 
 ## Safety-critical (do before trusting protection for real)
 
-- **Hung-daemon disarm escalation (the hard requirement, still NOT implemented).** Today's
-  disarm works when the daemon is responsive, and the SIGTERM path + shared lock are now safe.
-  But if the daemon is hung/SIGSTOPped, the app only gets an XPC error — there is no force-recycle.
-  Needed: app detects an unresponsive daemon (XPC timeout/heartbeat) → SMAppService unregister to
-  recycle it → a one-shot "disarm intent" flag a force-restarted daemon honors on next launch to
-  flush PF. Verify end-to-end (SIGSTOP the daemon, confirm the OFF button still restores internet).
-- **Apple anchor egress / R19 — highest-priority real-machine test** (carried over from Stage A).
-  Ruleset ends with `anchor "com.apple/*"` after the non-quick `block out all`. Confirm Apple
-  anchors can't inject a `pass` that overrides default-deny on en0, and that AirDrop/sharing still
-  work. Test as root; resolve the leak-vs-AirDrop tradeoff empirically.
+- **Hung-daemon disarm — DONE via break-glass (2026-06-08, commit 3adc5ca), verify live.** The app
+  now has a daemon-independent emergency OFF (`App/EmergencyOff.swift`): `osascript ... with
+  administrator privileges` runs `launchctl bootout` then `pfctl -f /etc/pf.conf`+`pfctl -d`, so it
+  restores the internet even if the daemon is hung/dead. XPC calls have a 4s timeout; an always-
+  reachable "Аварийное выключение" button is in the panel. **Still verify end-to-end** (SIGSTOP the
+  daemon, confirm the button restores internet; confirm the admin prompt appears under the shipped
+  signing). The fancier auto-escalation (detect hang → SMAppService unregister → one-shot disarm
+  flag) is now OPTIONAL — the manual break-glass covers the hard requirement.
+- **Apple anchor egress / R19 — FIXED with a backstop (2026-06-08, commit b37b1a9), verify live.**
+  Added a final `block out quick inet all` after `anchor "com.apple/*"` so a non-quick Apple `pass`
+  can't become the last match and leak. **Still verify as root**: `ks-diagnose.sh §11` dumps the
+  com.apple anchor contents and confirms the backstop is loaded last; confirm AirDrop/sharing
+  behaviour is acceptable (note: IPv6 is already fully blocked, so AirDrop is largely affected
+  regardless).
 - **No pfctl subprocess timeout → now bounded at 10s (fixed).** Remaining: pick the right timeout
   and confirm a terminated pfctl leaves PF in a sane state on the real machine.
+
+## Now unlocked (2026-06-08)
+
+- **Strict / Lockdown mode** (hold the block even when the daemon is down). The user accepts this
+  *because* the daemon-independent break-glass now exists. Design: a toggle that, when on, makes the
+  off-paths (SIGTERM handler, normal exit) NOT flush — leaving block-all loaded — plus a boot-time
+  loader so protection survives a restart. Fail-open stays the DEFAULT; strict is opt-in. The
+  break-glass (`EmergencyOff`) remains the guaranteed escape. This is the natural next increment.
+- **`user root` on the server pass rule** (Mullvad pattern): `pass out … to <servers> port <p> user
+  root` so unprivileged processes can't reach/fingerprint the server IP — tightens the deferred
+  "server pass rules are broad" item. **Prerequisite:** confirm the NEPacketTunnelProvider tunnel
+  process (`packet-ex`) actually runs as root, or this breaks the tunnel. Verify before adopting.
+- **DHCP/mDNS always-allowed — DONE (2026-06-08, commit 11b15e0).** Link can re-acquire after sleep.
 
 ## Needs real-machine verification
 

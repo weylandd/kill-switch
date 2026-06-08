@@ -153,6 +153,61 @@ read which rules actually matched: a `pass` rule with 0 packets means it isn't m
 pflog, create the interface first: `ifconfig pflog0 create`.) Verify safely with a time-boxed script
 that auto-restores the internet on exit (`trap cleanup EXIT`).
 
+## Strategic validation & cross-project findings (2026-06-08 deep research)
+
+After the runtime fixes, we cross-checked the whole approach against the field (Mullvad's
+open-source PF implementation and security docs, OpenBSD `pf.conf` semantics, Apple's WWDC25
+"Filter and tunnel network traffic" guidance, and privacy-community discussion). Conclusions worth
+keeping for any macOS VPN kill-switch:
+
+**PF is the validated tool — not Network Extension.** Mullvad, IVPN, Private Internet Access, and
+PrivateVPN all enforce the macOS kill-switch with PF (the packet filter), specifically because it
+filters by packet and does not let any app — including Apple's own — bypass it. ProtonVPN follows the
+"Apple way" (`includeAllNetworks` on a Network Extension) and its kill-switch was publicly
+demonstrated to leak on macOS; `includeAllNetworks` also has a documented failure where an App Store
+update of the VPN app drops all connectivity until reboot (Mullvad's "Why we still don't use
+includeAllNetworks"). Apple (WWDC25) tells *mass-distributed* apps to avoid PF and routing-table
+edits because they can clash with AirDrop/Continuity/Sidecar — a real trade-off, but the
+privacy-leading VPNs accept it deliberately. For a personal tool, PF is the correct choice.
+
+**The Apple-anchor leak is real (R19) — add a final block.** `pf` applies the *last matching*
+non-`quick` rule. A ruleset that ends with `anchor "com.apple/*"` after `block out all` can leak: a
+non-`quick` `pass` inside that anchor becomes the last match and overrides default-deny on the
+physical NIC. Fix: end with a backstop `block out quick inet all` *after* the anchor (Apple's own
+`quick` passes, e.g. AirDrop, still work; everything else outbound is slammed shut). Mullvad sidesteps
+this entirely by loading rules into its *own* named anchor and not trusting the broad Apple anchor.
+
+**Always-allow link-local plumbing.** Mullvad's "always-allowed exceptions" are loopback, DHCP, and
+NDP. Without DHCP (and mDNS) a PF kill-switch commonly fails to reconnect after sleep / a Wi-Fi
+toggle (the classic "No Internet" alert that won't clear). These are safe to always allow: they stay
+on the local segment and never carry the real public IP off-link.
+
+**Fail-open vs strict (Lockdown) is a deliberate fork.** Mullvad *keeps* blocking rules loaded when
+the daemon exits (Lockdown mode) — strict, but it relies on a trustworthy escape. This project's hard
+requirement is the opposite (never lock the user out), so every off-path *flushes* the rules and the
+daemon fails open on exit. The cost is honest: protection only holds while the daemon is alive (a
+crash / kill / the boot window is a leak window). A strict mode becomes safe to offer only once a
+**daemon-independent emergency OFF** exists.
+
+**Daemon-independent emergency OFF ("break-glass").** Because PF rules live in the kernel
+independently of the daemon, a hung/dead daemon can leave the internet blocked with no GUI way out.
+The robust escape does not talk to the daemon at all: from the unprivileged app, spawn
+`osascript -e 'do shell script "…" with administrator privileges'` to run, as root,
+`launchctl bootout system/<label>` (stop the daemon so the watchdog can't re-arm) then
+`pfctl -f /etc/pf.conf` + `pfctl -d`. Use a subprocess (not in-process `NSAppleScript`) so no
+Apple-events entitlement is needed under the hardened runtime. Order matters: stop the daemon first,
+then flush, or the watchdog reinstalls the rules in the gap. Also give the app's XPC calls a short
+timeout so a hung daemon fails fast instead of spinning the UI.
+
+**Boot-time leak window is unavoidable on macOS.** Even Mullvad can't fully close it (macOS won't let
+a daemon start before the network); their guidance is literally "disconnect the network before
+rebooting." Don't over-invest in boot-time blocking.
+
+**Hardening idea not yet adopted:** Mullvad restricts the VPN-server pass rule to `user root`
+(`pass out … to <server> port <p> user root`) so unprivileged processes can't reach/fingerprint the
+server IP. Worth adopting *after* confirming the local VPN client's tunnel process runs as root —
+otherwise it breaks the tunnel.
+
 ## Related
 
 - Plan: `docs/plans/2026-06-07-001-feat-vpn-kill-switch-macos-plan.md`
