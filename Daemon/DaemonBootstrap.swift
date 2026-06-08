@@ -8,6 +8,8 @@ public protocol PFControlling {
     func load(_ ruleset: String) throws
     func enable() throws
     func disable() throws
+    /// Definitive OFF: remove our ruleset from the kernel and disable PF (not just disable).
+    func restoreSystemDefault() throws
     func addServer(_ address: String) throws
     func removeServer(_ address: String) throws
     func isPFEnabled() -> Bool

@@ -98,7 +98,10 @@ public final class CommandHandler {
             try pf.enable()
             log("protection enabled")
         } else {
-            try pf.disable()
+            // Restore the system default ruleset, not just `pfctl -d`: leaving our block-all loaded
+            // in the kernel is a landmine — anything re-enabling PF later (on wake, or a VPN
+            // client) would re-block everything with no daemon left to undo it.
+            try pf.restoreSystemDefault()
             log("protection DISARMED — internet open")
         }
     }

@@ -70,11 +70,17 @@ final class CommandHandlerTests: XCTestCase {
 
     /// Covers AE8: emergency disarm disables PF immediately and persists the disarmed flag, so a
     /// watchdog tick or app reconnect sees a consistent "off" and never re-blocks.
-    func testEmergencyDisarmDisablesAndPersists() throws {
+    ///
+    /// Regression (2026-06-08): disarm must REMOVE our ruleset from the kernel, not just disable
+    /// PF. Leaving "block out all" loaded was a landmine — anything re-enabling PF later (on wake,
+    /// or a VPN client) re-blocked all traffic with no daemon left to undo it.
+    func testEmergencyDisarmRestoresDefaultAndPersists() throws {
         pf.enabled = true
+        pf.rulesLoaded = true
         try handler.setProtection(enabled: false)
         XCTAssertFalse(pf.enabled, "the firewall is off — internet restored")
-        XCTAssertTrue(pf.ops.contains(.disable))
+        XCTAssertFalse(pf.rulesLoaded, "our block-all ruleset is removed from the kernel (no landmine)")
+        XCTAssertTrue(pf.ops.contains(.restore), "disarm restores the system default, not just pfctl -d")
         XCTAssertFalse(store.load().protectionEnabled, "disarm is persisted so the watchdog won't fight it")
     }
 

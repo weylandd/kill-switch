@@ -123,6 +123,19 @@ public final class PFRulesetManager {
         try runTolerating(pfctlPath, ["-d"], allowing: ["already disabled", "pf disabled", "pf not enabled"])
     }
 
+    /// Definitive OFF: replace our ruleset with the macOS system default, then disable PF.
+    ///
+    /// Disabling PF alone is NOT enough. `pfctl -d` stops enforcement but leaves our
+    /// `block ... out all` ruleset loaded in the kernel, and that survives sleep/wake. If anything
+    /// then re-enables PF (the system on wake, or a VPN client), our default-deny blocks all
+    /// traffic again — with no daemon left to undo it. Loading `/etc/pf.conf` removes our rules so
+    /// "off" is truly off. Best-effort on the reload (its stderr warning is normal) — we still
+    /// disable PF regardless.
+    public func restoreSystemDefault() throws {
+        _ = try? run(pfctlPath, ["-f", "/etc/pf.conf"])
+        try disable()
+    }
+
     /// Add a server to the table on the fly (no full reload). Idempotent.
     public func addServer(_ address: String) throws {
         guard Self.isValidIPv4(address) else { throw PFError.invalidAddress(address) }

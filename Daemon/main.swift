@@ -52,8 +52,11 @@ xpc.resume()
 // user explicitly prefers fail-open over any lockout risk.
 let sigterm = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 sigterm.setEventHandler {
-    try? pf.disable()
-    FileHandle.standardError.write(Data("[\(KillSwitchConfig.daemonLabel)] SIGTERM — disabled PF, exiting\n".utf8))
+    // Restore the system default ruleset (not just `pfctl -d`): otherwise our block-all rules stay
+    // loaded in the kernel after we exit and re-block everything the next time PF is enabled (on
+    // wake, or by a VPN client), with no daemon left to undo it.
+    try? pf.restoreSystemDefault()
+    FileHandle.standardError.write(Data("[\(KillSwitchConfig.daemonLabel)] SIGTERM — restored default ruleset, exiting\n".utf8))
     exit(EXIT_SUCCESS)
 }
 sigterm.resume()
