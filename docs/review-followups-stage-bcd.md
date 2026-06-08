@@ -8,6 +8,18 @@ MVP. Listed so they aren't forgotten.
 
 ## Safety-critical (do before trusting protection for real)
 
+- **Boot lockout (no app present at boot) — FIXED (2026-06-08, commit d1b7625), verify live.** Real
+  incident: the user booted, did not enable protection, and had no internet. Root cause: the daemon
+  boots protected (RunAtLoad + the always-protected boot policy) and blocks all traffic until the VPN
+  tunnel comes up, but the menu-bar app — the ONLY non-Terminal way to disarm or run the break-glass —
+  was never registered as a login item, so it was not running at boot. The user was stranded and used
+  Terminal. Fix: `App/AppLoginItem.swift` (SMAppService.mainApp) registers the control app as a login
+  item during setup and self-heals on launch when the daemon is approved; the tunnel-down status now
+  tells the user to connect the VPN or disarm. **The user explicitly chose "always protected after
+  reboot"** (a strict posture) — acceptable to him *because* the break-glass exists and the app is now
+  always present. **Verify live:** after setup, the app appears in System Settings → Login Items; after
+  a reboot the menu-bar icon is present and the disarm toggle + break-glass work with no Terminal.
+  Watch for ad-hoc-signing rejection of the login-item registration (see real-machine list).
 - **Hung-daemon disarm — DONE via break-glass (2026-06-08, commit 3adc5ca), verify live.** The app
   now has a daemon-independent emergency OFF (`App/EmergencyOff.swift`): `osascript ... with
   administrator privileges` runs `launchctl bootout` then `pfctl -f /etc/pf.conf`+`pfctl -d`, so it
@@ -45,7 +57,9 @@ MVP. Listed so they aren't forgotten.
   `pfctl -F rules`. Watchdog interval tuning (default 5s) by direct observation.
 - The new ruleset shape passes `pfctl -vnf` (per-interface utun passes, bidirectional `no state`
   server passes): run `KS_RUN_INTEGRATION=1 sudo xcodebuild test`.
-- SMAppService registration with real signing (ad-hoc may be rejected).
+- SMAppService registration with real signing (ad-hoc may be rejected) — for BOTH the daemon and the
+  new main-app login item (`AppLoginItem`/`SMAppService.mainApp`). Confirm the app actually shows up
+  in System Settings → Login Items and relaunches after a reboot.
 - `removeServer` → switch `PFRulesetManager.removeServer` to `runTolerating` once the exact
   `pfctl -T delete` exit/message for a missing entry is confirmed.
 
