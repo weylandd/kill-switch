@@ -44,7 +44,9 @@ public enum EmergencyOff {
         proc.arguments = ["-e", appleScript]
         let errPipe = Pipe()
         proc.standardError = errPipe
-        proc.standardOutput = Pipe()
+        // Discard stdout: we never read it, and an undrained pipe could fill and block the process —
+        // unacceptable on the guaranteed escape path. stderr stays a pipe (small, drained below).
+        proc.standardOutput = FileHandle.nullDevice
 
         do {
             try proc.run()
