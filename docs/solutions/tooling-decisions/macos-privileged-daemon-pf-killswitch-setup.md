@@ -1,6 +1,7 @@
 ---
 title: "macOS privileged daemon (SMAppService) + PF kill-switch: packaging and pfctl gotchas"
 date: 2026-06-07
+last_updated: 2026-06-08
 category: tooling-decisions
 module: KillSwitch app + daemon packaging
 problem_type: tooling_decision
@@ -10,7 +11,8 @@ applies_when:
   - "Building a macOS app with a privileged LaunchDaemon via SMAppService"
   - "Generating the Xcode project with XcodeGen (project.yml)"
   - "Writing or applying a PF (pfctl) ruleset from code"
-tags: [macos, pfctl, smappservice, xcodegen, launchd, kill-switch, swift]
+  - "A PF default-deny kill-switch coexisting with a NetworkExtension VPN (utun)"
+tags: [macos, pfctl, smappservice, xcodegen, launchd, kill-switch, swift, utun, networkextension, pflog]
 ---
 
 # macOS privileged daemon (SMAppService) + PF kill-switch: packaging and pfctl gotchas
@@ -104,7 +106,56 @@ postBuildScripts:
             "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Library/LaunchDaemons/com.killswitch.daemon.plist"
 ```
 
+## Runtime gotchas — why a PF kill-switch silently blocks ALL VPN traffic (2026-06-08)
+
+After Stage A, the daemon worked (blocked everything, OFF switch worked) but with protection ON
+the VPN tunnel was up and the server reachable yet **no traffic flowed** — browser and `curl` dead.
+A multi-hour live-debugging marathon found four distinct causes. Each is silent and easy to re-hit
+on any macOS PF-based kill-switch coexisting with a system (NetworkExtension) VPN.
+
+**1. macOS pf has NO implicit `utun` interface group (unlike OpenBSD).** `pass quick on utun all`
+matches **zero packets** on macOS — there is no `utun` group, so the decrypted tunnel traffic falls
+straight through to `block ... all` and is dropped. Symptom: tunnel interface up, server reachable,
+but the rule's packet counter is 0 and nothing flows. **Fix:** enumerate the live interfaces
+(`getifaddrs`, names with prefix `utun`) and emit one rule per interface: `pass quick on utun7 all
+no state`. Because utun names appear/shift after boot (the VPN connects later), rebuild the ruleset
+and reload when the interface set changes (watchdog on a network-change event), not just at boot.
+
+**2. Stateful pass rules drop a pre-existing connection's RETURN packets.** When PF starts on top of
+an already-connected VPN, it never saw the TCP handshake, so the server's reply packets look
+out-of-window and get dropped by `block in all` — the outer transport goes half-open (data out,
+nothing back) and the tunnel dies. Symptom (from counters): outbound to server passes, ~hundreds of
+KB **inbound blocked**. **Fix:** for the trusted VPN-server transport, allow both directions with NO
+state tracking — `pass out quick inet from any to <servers> no state` + `pass in quick inet from
+<servers> to any no state` — and `no state` on the utun passes too.
+
+**3. "OFF" must FLUSH the ruleset, not just `pfctl -d`.** `pfctl -d` disables enforcement but leaves
+the block-all rules loaded in the kernel, and **PF rules survive sleep/wake** (not a full reboot).
+Anything that later re-enables PF (macOS on wake, or the VPN client) re-blocks everything — with no
+daemon left to undo it. Symptom: wake from sleep to no internet "as if it turned on by itself";
+`pfctl -d` helps for a moment then it comes back. **Fix:** the OFF path runs `pfctl -f /etc/pf.conf`
+(load the system default, removing our rules) then `pfctl -d`. Use it on every off path: emergency
+disarm, the SIGTERM handler, and the uninstall script.
+
+**4. A watchdog must never override a user disarm.** A self-healing watchdog (reinstall rules if PF
+drops) will fight the OFF switch: it can read the old "enabled" state microseconds before a disarm
+lands, then re-enable right after. **Fix:** share one lock between the watchdog and the command
+handler; the watchdog holds it for the whole read-decide-apply, and the SIGTERM handler stops the
+watchdog and takes the lock before restoring. Also: the watchdog must keep checking PF status every
+tick (don't "skip the check when the ruleset is unchanged" — you'd miss an external `pfctl -d`).
+
+**THE diagnostic technique that cracked it:** `tcpdump -i pflog0` is a trap — **pflog0 does not
+exist by default on macOS** (`No such device`), so `block ... log` rules log nowhere and tcpdump
+silently captures zero. The reliable tool is **`pfctl -v -s rules`** — per-rule counters
+(`Evaluations / Packets / Bytes / States`). Reset with `pfctl -z`, run the failing traffic, then
+read which rules actually matched: a `pass` rule with 0 packets means it isn't matching; a high
+`block ... all` byte count tells you what's being dropped and in which direction. (If you do want
+pflog, create the interface first: `ifconfig pflog0 create`.) Verify safely with a time-boxed script
+that auto-restores the internet on exit (`trap cleanup EXIT`).
+
 ## Related
 
 - Plan: `docs/plans/2026-06-07-001-feat-vpn-kill-switch-macos-plan.md`
-- Deferred review items / real-machine checks: `docs/review-followups-stage-a.md`
+- Deferred review items / real-machine checks: `docs/review-followups-stage-a.md`,
+  `docs/review-followups-stage-bcd.md`
+- Verification helper: `scripts/ks-diagnose.sh` (time-boxed, auto-restoring)
