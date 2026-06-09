@@ -8,21 +8,29 @@ LABEL="com.killswitch.daemon"
 SERVER="89.106.86.61"
 INSTALL_DIR="/Library/Application Support/KillSwitch"
 PLIST="/Library/LaunchDaemons/$LABEL.plist"
+ANCHOR="com.killswitch"
+PFCONF="/etc/pf.conf"
 
 # Pass "lan" as the first argument to test with local-network access ON (opens the router / local DNS).
 LAN="false"
 if [ "${1:-}" = "lan" ]; then LAN="true"; echo "(режим: локальная сеть ВКЛЮЧЕНА)"; fi
 
-# Guaranteed recovery: restore default rules, disable PF, remove the daemon — whatever happens.
+# Guaranteed recovery: surgically remove only OUR anchor + its pf.conf reference, then stop the
+# temp daemon — whatever happens. We do NOT run `pfctl -d` (PF may be used by another VPN); flushing
+# our anchor and dropping its reference is enough to remove all our blocking.
 cleanup() {
   echo
   echo "=== ВОССТАНАВЛИВАЮ ИНТЕРНЕТ ==="
-  pfctl -f /etc/pf.conf 2>/dev/null || true
-  pfctl -d 2>/dev/null || true
+  pfctl -a "$ANCHOR" -F all 2>/dev/null || true
+  if grep -qF "anchor \"$ANCHOR\"" "$PFCONF" 2>/dev/null; then
+    grep -vF "anchor \"$ANCHOR\"" "$PFCONF" > "$PFCONF.ks-tmp" 2>/dev/null && mv "$PFCONF.ks-tmp" "$PFCONF"
+    pfctl -f "$PFCONF" 2>/dev/null || true
+  fi
   launchctl bootout "system/$LABEL" 2>/dev/null || true
   rm -f "$PLIST"
   rm -f "$INSTALL_DIR/$LABEL"
-  echo "готово — интернет должен вернуться"
+  rm -f "$INSTALL_DIR/session-disarm"
+  echo "готово — интернет должен вернуться (системный фаервол не выключали)"
 }
 trap cleanup EXIT INT TERM
 
@@ -30,8 +38,10 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 SRC_BIN="$REPO/build/DerivedData/Build/Products/Debug/KillSwitch.app/Contents/MacOS/$LABEL"
 if [ ! -x "$SRC_BIN" ]; then echo "Нет бинарника демона — собери проект" >&2; exit 1; fi
 
-# Pre-seed the server so the daemon boots with it allowed.
+# Pre-seed the server so the daemon boots with it allowed. Also drop any leftover session-disarm
+# marker so the diagnostic daemon boots ARMED (a stale marker would make it boot disarmed).
 mkdir -p "$INSTALL_DIR"
+rm -f "$INSTALL_DIR/session-disarm"
 cat > "$INSTALL_DIR/state.json" <<JSON
 { "servers": [ {"address":"$SERVER","port":443,"label":"v2RayTun","addedAt":"2026-06-08T00:00:00Z"} ], "protectionEnabled": true, "lanAllowed": $LAN, "clients": [] }
 JSON
@@ -60,8 +70,10 @@ launchctl bootstrap system "$PLIST"
 sleep 6   # let the VPN client react / reconnect
 
 echo
-echo "### 1. Фаервол и число живых соединений:"
-pfctl -s info 2>/dev/null | grep -E "Status|current entries|searches"
+echo "### 1. Фаервол, счётчик ссылок (-E/-X) и число живых соединений:"
+# 'Reference Count' > 1 means another component (e.g. a second VPN) also holds PF enabled — so our
+# disarm releasing OUR reference must NOT take the firewall down for them.
+pfctl -s info 2>/dev/null | grep -E "Status|Reference|current entries|searches"
 echo
 echo "### 2. Свежее соединение к серверу проходит сквозь правило? (хотим: ДОСТУПЕН)"
 if nc -G 4 -z "$SERVER" 443 2>/dev/null; then echo "  сервер $SERVER:443 — ДОСТУПЕН ✓"; else echo "  сервер $SERVER:443 — НЕдоступен ✗"; fi
@@ -87,8 +99,16 @@ echo
 echo "### 8. Полный путь (curl по имени):"
 echo -n "  curl -> "; curl -s --max-time 6 https://api.ipify.org || echo -n "(нет ответа)"; echo
 echo
-echo "### 9. Реально загруженные правила (наши?):"
-pfctl -s rules 2>/dev/null | grep -E 'utun|servers|out all' | sed 's/^/  /'
+echo "### 9. Реально загруженные правила в НАШЕМ отсеке (anchor $ANCHOR):"
+# Our rules live in our anchor now, NOT the main ruleset — so inspect the anchor, not `pfctl -s rules`.
+pfctl -a "$ANCHOR" -sr 2>/dev/null | grep -E 'utun|servers|out all|lo0' | sed 's/^/  /' \
+  || echo "  (отсек пуст — наших правил нет)"
+echo
+echo "### 9b. Ссылка на наш отсек в главном наборе (без неё PF наш отсек не оценивает):"
+echo -n "  -- $PFCONF содержит 'anchor \"$ANCHOR\"'? "
+if grep -qF "anchor \"$ANCHOR\"" "$PFCONF" 2>/dev/null; then echo "ДА ✓ (в файле)"; else echo "НЕТ ✗ (в файле)"; fi
+echo -n "  -- живой главный набор ссылается на наш отсек? "
+if pfctl -sr 2>/dev/null | grep -qF "$ANCHOR"; then echo "ДА ✓ (загружен)"; else echo "НЕТ ✗ (не загружен)"; fi
 echo
 echo "### 10. events.log:"
 tail -4 "$INSTALL_DIR/events.log" 2>/dev/null | sed 's/^/  /'
@@ -97,8 +117,9 @@ echo "### 11. R19 — Apple-якорь и наш backstop против утеч�
 echo "  -- правила внутри com.apple (любой 'pass' тут наш backstop перекрывает):"
 pfctl -a 'com.apple/*' -sr 2>/dev/null | sed 's/^/    /' || true
 [ -z "$(pfctl -a 'com.apple/*' -sr 2>/dev/null)" ] && echo "    (пусто — Apple-якорь не содержит правил, утечки отсюда нет)"
-echo -n "  -- финальный backstop 'block out quick inet all' загружен последним? "
-if pfctl -sr 2>/dev/null | grep -qE 'block.*out quick inet all'; then echo "ДА ✓"; else echo "НЕТ ✗"; fi
+echo -n "  -- финальный backstop 'block out quick inet all' — последнее правило нашего отсека? "
+if [ "$(pfctl -a "$ANCHOR" -sr 2>/dev/null | grep -E 'block|pass' | tail -1)" = "block drop out quick inet all" ] \
+   || pfctl -a "$ANCHOR" -sr 2>/dev/null | grep -qE 'block.*out quick inet all'; then echo "ДА ✓"; else echo "НЕТ ✗"; fi
 
 sleep 1
 # cleanup() runs automatically on exit and restores the internet
