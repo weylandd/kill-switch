@@ -109,6 +109,23 @@ final class PFRulesetManagerTests: XCTestCase {
         XCTAssertLessThan(lo0, blockIn, "lo0 pass must precede block-all")
     }
 
+    /// U3: appending our anchor reference to /etc/pf.conf is idempotent and additive (no duplicates),
+    /// and lands at the END so it is evaluated after `anchor "com.apple/*"` (R19 ordering).
+    func testAnchorReferenceIdempotentAdd() {
+        let withApple = "scrub-anchor \"com.apple/*\"\nanchor \"com.apple/*\"\n"
+        guard let added = PFRulesetManager.pfConfByAddingAnchorReference(to: withApple, anchorName: "com.killswitch") else {
+            return XCTFail("a pf.conf without our reference must get one added")
+        }
+        XCTAssertTrue(added.hasSuffix("anchor \"com.killswitch\"\n"), "appended at the END, after com.apple")
+        XCTAssertTrue(added.contains("anchor \"com.apple/*\""), "existing lines are preserved")
+        // Already present → nil (no duplicate line on repeat).
+        XCTAssertNil(PFRulesetManager.pfConfByAddingAnchorReference(to: added, anchorName: "com.killswitch"),
+                     "a pf.conf already containing our reference is left unchanged")
+        // A file without a trailing newline still produces a well-formed result.
+        XCTAssertEqual(PFRulesetManager.pfConfByAddingAnchorReference(to: "anchor \"com.apple/*\"", anchorName: "com.killswitch"),
+                       "anchor \"com.apple/*\"\nanchor \"com.killswitch\"\n")
+    }
+
     /// `pfctl -E` prints a token used to release exactly our reference with `-X`. Parse it robustly.
     func testParseEnableToken() {
         XCTAssertEqual(PFRulesetManager.parseEnableToken("pf enabled\nToken : 1234567890"), "1234567890")

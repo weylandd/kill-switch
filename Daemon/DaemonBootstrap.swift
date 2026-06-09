@@ -7,6 +7,10 @@ public protocol PFControlling {
     func makeRuleset(from state: PersistedState) throws -> String
     func load(_ ruleset: String) throws
     func enable() throws
+    /// Ensure /etc/pf.conf references our anchor so PF evaluates it (idempotent, additive).
+    func ensureAnchorReferenced() throws
+    /// Whether the live main ruleset currently references our anchor (watchdog drift check).
+    func isAnchorReferenced() -> Bool
     /// Definitive OFF for our protection: flush ONLY our anchor and release our enable reference.
     /// Never touches the system main ruleset and never disables PF globally (R29–R32).
     func clearOurAnchor() throws
@@ -46,8 +50,9 @@ public final class DaemonBootstrap {
     public func start() throws -> String {
         let state = store.load()
         let ruleset = try pf.makeRuleset(from: state)
-        try pf.load(ruleset)        // default-deny rules loaded before enabling
-        try pf.enable()             // now enable the firewall
+        try pf.load(ruleset)            // default-deny rules loaded into our anchor before enabling
+        try pf.ensureAnchorReferenced() // make the main ruleset evaluate our anchor (idempotent)
+        try pf.enable()                 // now enable the firewall (reference-counted -E)
 
         if !state.protectionEnabled {
             var corrected = state

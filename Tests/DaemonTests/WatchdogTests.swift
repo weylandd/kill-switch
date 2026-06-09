@@ -64,6 +64,21 @@ final class WatchdogTests: XCTestCase {
         XCTAssertTrue(pf.ops.contains(.load))
     }
 
+    /// U3: an OS update or third-party flush dropped our anchor reference from the live main ruleset.
+    /// Our rules may still be loaded, but they are no longer evaluated — the watchdog must re-add the
+    /// reference (not just reload rules).
+    func testMissingAnchorReferenceIsReAdded() {
+        let pf = FakePF()
+        pf.enabled = true
+        pf.rulesLoaded = true
+        pf.anchorReferenced = false   // reference gone from the running main ruleset
+        let wd = makeWatchdog(pf: pf, state: PersistedState(servers: [ServerRule(address: "1.2.3.4", label: "x")]))
+
+        XCTAssertTrue(wd.reconcile(), "a missing anchor reference must trigger a repair")
+        XCTAssertTrue(pf.ops.contains(.reference), "the watchdog re-adds the /etc/pf.conf reference")
+        XCTAssertTrue(pf.anchorReferenced, "the reference is restored")
+    }
+
     /// KTD7 / hard requirement: when the user has disarmed, the watchdog must NEVER re-enable
     /// protection — otherwise it would fight the emergency OFF switch and re-block the internet.
     func testDisarmedStateIsLeftAlone() {

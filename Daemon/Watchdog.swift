@@ -101,14 +101,20 @@ public final class Watchdog {
 
         let pfOn = pf.isPFEnabled()
         let rulesLoaded = pf.isRulesetLoaded()
-        if pfOn && rulesLoaded && desired == lastApplied {
+        // Also confirm the main ruleset still references our anchor — an OS update or an aggressive
+        // third-party flush can drop the reference, leaving our rules loaded but never evaluated.
+        let referenced = pf.isAnchorReferenced()
+        if pfOn && rulesLoaded && referenced && desired == lastApplied {
             return false   // healthy and up to date — do nothing (no rule thrashing)
         }
 
-        // Reapply in the same order as boot: load rules, then enable.
-        let reason = !pfOn ? "PF was off" : (!rulesLoaded ? "rules were flushed" : "tunnels changed")
+        // Reapply in the same order as boot: load rules, (re-add the reference if it drifted), enable.
+        let reason = !pfOn ? "PF was off"
+            : (!referenced ? "anchor reference missing from /etc/pf.conf"
+            : (!rulesLoaded ? "our anchor was flushed" : "tunnels changed"))
         do {
             try pf.load(desired)
+            if !referenced { try pf.ensureAnchorReferenced() }
             try pf.enable()
             lastApplied = desired
             log("Watchdog: reapplied protection (\(reason))")

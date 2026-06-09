@@ -107,6 +107,7 @@ public final class CommandHandler {
         if enabled {
             let ruleset = try pf.makeRuleset(from: state)
             try pf.load(ruleset)
+            try pf.ensureAnchorReferenced()   // re-assert the main-ruleset reference if it drifted
             try pf.enable()
             log("protection enabled")
         } else {

@@ -27,6 +27,10 @@ public final class PFRulesetManager {
     /// Path where the daemon writes the active ruleset (root-owned).
     public let rulesetURL: URL
     private let pfctlPath: String
+    /// System main ruleset file. PF only evaluates anchors referenced from here, so we add our
+    /// anchor reference to it once (idempotently). This is the ONLY file we ever touch outside our
+    /// own state dir, and only additively.
+    private let pfConfPath = "/etc/pf.conf"
     /// Name of the dedicated anchor that holds all our rules. Everything is scoped to it.
     private let anchorName: String
     /// Lists the current utun interfaces (injected for tests; live enumeration in production).
@@ -204,6 +208,43 @@ public final class PFRulesetManager {
             }
         }
         return nil
+    }
+
+    /// Ensure the system main ruleset references our anchor, so PF actually evaluates it. The main
+    /// ruleset only evaluates anchors named in it, and the stock `/etc/pf.conf` references only
+    /// `com.apple/*` — so without this our anchor's rules are loaded but never consulted.
+    ///
+    /// Additive and idempotent: we append `anchor "com.killswitch"` once (never rewrite existing
+    /// lines) and reload the main ruleset ONLY when something changed — either we just added the line,
+    /// or the live ruleset drifted from the file (an OS update / third-party flush dropped it). The
+    /// reload is the one moment we re-read pf.conf (which can transiently drop other tools' dynamic
+    /// anchors), so we keep it to the minimum.
+    public func ensureAnchorReferenced() throws {
+        let contents = (try? String(contentsOfFile: pfConfPath, encoding: .utf8)) ?? ""
+        if let updated = Self.pfConfByAddingAnchorReference(to: contents, anchorName: anchorName) {
+            try updated.write(toFile: pfConfPath, atomically: true, encoding: .utf8)
+            try run(pfctlPath, ["-f", pfConfPath])          // newly added → load it into the live ruleset
+        } else if !isAnchorReferenced() {
+            try run(pfctlPath, ["-f", pfConfPath])          // file already had it but the live ruleset lost it
+        }
+    }
+
+    /// Whether the LIVE main ruleset currently references our anchor (`pfctl -sr`). Used by the
+    /// watchdog to detect that an OS update or another tool flushed our reference out of the running
+    /// ruleset even if the file still contains it.
+    public func isAnchorReferenced() -> Bool {
+        guard let result = try? exec(pfctlPath, ["-sr"]), result.status == 0 else { return false }
+        return result.output.contains(anchorName)
+    }
+
+    /// Pure helper (testable without root): given the current /etc/pf.conf contents, return the new
+    /// contents with our anchor reference appended at the END — after `anchor "com.apple/*"`, which
+    /// keeps our backstop the last word (R19) — or nil if the line is already present (no duplicate).
+    static func pfConfByAddingAnchorReference(to existing: String, anchorName: String) -> String? {
+        let line = "anchor \"\(anchorName)\""
+        guard !existing.contains(line) else { return nil }
+        let needsNewline = !existing.isEmpty && !existing.hasSuffix("\n")
+        return existing + (needsNewline ? "\n" : "") + line + "\n"
     }
 
     /// Add a server to the table on the fly (no full reload). Idempotent. Scoped to our anchor —

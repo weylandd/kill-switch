@@ -4,10 +4,13 @@ import KillSwitchShared
 
 /// Fake PF engine: records the order of operations without touching the kernel (no-root tests).
 final class FakePF: PFControlling {
-    enum Op: Equatable { case make, load, enable, clear, add(String), remove(String) }
+    enum Op: Equatable { case make, load, enable, clear, reference, add(String), remove(String) }
     private(set) var ops: [Op] = []
     var enabled = false
     var rulesLoaded = false   // does our anchor hold rules (set by load, cleared by a flush)
+    // Whether the main ruleset references our anchor. Defaults true (the common case); set false to
+    // model an OS update / third-party flush dropping our reference.
+    var anchorReferenced = true
     var lastRuleset = ""
     var failMake = false   // if true, makeRuleset throws (simulates an invalid state)
 
@@ -20,6 +23,8 @@ final class FakePF: PFControlling {
     func load(_ ruleset: String) throws { ops.append(.load); rulesLoaded = true }
     // Reference-counted enable (`pfctl -E`): models the firewall coming up.
     func enable() throws { ops.append(.enable); enabled = true }
+    func ensureAnchorReferenced() throws { ops.append(.reference); anchorReferenced = true }
+    func isAnchorReferenced() -> Bool { anchorReferenced }
     // Anchor-only OFF: flush our anchor (rules gone) + release our reference. With no other holder
     // in the fake, PF comes down too — model both. NEVER a global main-ruleset replace.
     func clearOurAnchor() throws { ops.append(.clear); enabled = false; rulesLoaded = false }
@@ -51,7 +56,8 @@ final class DaemonBootstrapTests: XCTestCase {
 
         try DaemonBootstrap(store: store, pf: pf, log: { _ in }).start()
 
-        XCTAssertEqual(pf.ops, [.make, .load, .enable], "order: build → load → enable")
+        XCTAssertEqual(pf.ops, [.make, .load, .reference, .enable],
+                       "order: build → load → reference the anchor → enable")
         XCTAssertTrue(pf.enabled)
         XCTAssertTrue(pf.lastRuleset.contains("89.106.86.61"), "the saved server made it into the ruleset")
     }
@@ -63,7 +69,7 @@ final class DaemonBootstrapTests: XCTestCase {
 
         try DaemonBootstrap(store: store, pf: pf, log: { _ in }).start()
 
-        XCTAssertEqual(pf.ops, [.make, .load, .enable])
+        XCTAssertEqual(pf.ops, [.make, .load, .reference, .enable])
         XCTAssertTrue(pf.enabled, "default-deny + enabled even with no servers")
     }
 
