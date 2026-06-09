@@ -4,10 +4,10 @@ import KillSwitchShared
 
 /// Fake PF engine: records the order of operations without touching the kernel (no-root tests).
 final class FakePF: PFControlling {
-    enum Op: Equatable { case make, load, enable, disable, restore, add(String), remove(String) }
+    enum Op: Equatable { case make, load, enable, clear, add(String), remove(String) }
     private(set) var ops: [Op] = []
     var enabled = false
-    var rulesLoaded = false   // does our ruleset sit in the kernel (set by load, cleared by an external flush)
+    var rulesLoaded = false   // does our anchor hold rules (set by load, cleared by a flush)
     var lastRuleset = ""
     var failMake = false   // if true, makeRuleset throws (simulates an invalid state)
 
@@ -18,11 +18,11 @@ final class FakePF: PFControlling {
         return lastRuleset
     }
     func load(_ ruleset: String) throws { ops.append(.load); rulesLoaded = true }
+    // Reference-counted enable (`pfctl -E`): models the firewall coming up.
     func enable() throws { ops.append(.enable); enabled = true }
-    // `pfctl -d` disables the firewall but the rules stay loaded in the kernel — model that.
-    func disable() throws { ops.append(.disable); enabled = false }
-    // Definitive OFF removes our rules AND disables PF — model both.
-    func restoreSystemDefault() throws { ops.append(.restore); enabled = false; rulesLoaded = false }
+    // Anchor-only OFF: flush our anchor (rules gone) + release our reference. With no other holder
+    // in the fake, PF comes down too — model both. NEVER a global main-ruleset replace.
+    func clearOurAnchor() throws { ops.append(.clear); enabled = false; rulesLoaded = false }
     func addServer(_ address: String) throws { ops.append(.add(address)) }
     func removeServer(_ address: String) throws { ops.append(.remove(address)) }
     func isPFEnabled() -> Bool { enabled }

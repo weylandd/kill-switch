@@ -110,10 +110,10 @@ public final class CommandHandler {
             try pf.enable()
             log("protection enabled")
         } else {
-            // Restore the system default ruleset, not just `pfctl -d`: leaving our block-all loaded
-            // in the kernel is a landmine — anything re-enabling PF later (on wake, or a VPN
-            // client) would re-block everything with no daemon left to undo it.
-            try pf.restoreSystemDefault()
+            // Flush ONLY our anchor and release our enable reference — never a global PF reset. Our
+            // rules live solely in our anchor, so clearing it removes all our blocking (R31) while
+            // any other VPN's rules and the global PF state are left intact (R29, R30, R32).
+            try pf.clearOurAnchor()
             log("protection DISARMED — internet open")
         }
     }

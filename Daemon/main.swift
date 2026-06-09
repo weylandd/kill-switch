@@ -59,16 +59,17 @@ xpc.resume()
 let sigterm = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 sigterm.setEventHandler {
     // Order matters to avoid a lockout: (1) stop the watchdog so no reconcile can fire after we
-    // restore, (2) take the shared lock so any in-flight watchdog/command op finishes first, then
-    // (3) restore the system default ruleset (not just `pfctl -d`) — otherwise our block-all rules
-    // stay loaded in the kernel after we exit and re-block everything the next time PF is enabled
-    // (on wake, or by a VPN client), with no daemon left to undo it. Without (1)+(2) the watchdog
-    // could re-enable our rules in the window between restore and exit, stranding the user.
+    // clear, (2) take the shared lock so any in-flight watchdog/command op finishes first, then
+    // (3) flush ONLY our anchor and release our enable reference — never a global `pfctl -d`. This
+    // removes all our blocking (we only ever write into our anchor) without disabling PF for any
+    // coexisting VPN (R29, R30, R32). A plain kill writes NO disarm marker, so a relaunch re-arms
+    // (correct: only a deliberate user disarm should hold across the session). Without (1)+(2) the
+    // watchdog could re-load our rules in the window between clear and exit, stranding the user.
     watchdog.stop()
     pfLock.lock()
-    try? pf.restoreSystemDefault()
+    try? pf.clearOurAnchor()
     pfLock.unlock()
-    FileHandle.standardError.write(Data("[\(KillSwitchConfig.daemonLabel)] SIGTERM — restored default ruleset, exiting\n".utf8))
+    FileHandle.standardError.write(Data("[\(KillSwitchConfig.daemonLabel)] SIGTERM — cleared our anchor, exiting\n".utf8))
     exit(EXIT_SUCCESS)
 }
 sigterm.resume()

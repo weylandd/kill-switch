@@ -68,19 +68,20 @@ final class CommandHandlerTests: XCTestCase {
         XCTAssertTrue(pf.ops.contains(.remove("89.106.86.61")))
     }
 
-    /// Covers AE8: emergency disarm disables PF immediately and persists the disarmed flag, so a
-    /// watchdog tick or app reconnect sees a consistent "off" and never re-blocks.
+    /// Covers AE3/AE4: disarm flushes ONLY our anchor and releases our reference — never a global
+    /// reset — and persists the disarmed flag, so a watchdog tick or app reconnect sees a consistent
+    /// "off" and never re-blocks.
     ///
-    /// Regression (2026-06-08): disarm must REMOVE our ruleset from the kernel, not just disable
-    /// PF. Leaving "block out all" loaded was a landmine — anything re-enabling PF later (on wake,
-    /// or a VPN client) re-blocked all traffic with no daemon left to undo it.
-    func testEmergencyDisarmRestoresDefaultAndPersists() throws {
+    /// Surgical-PF invariant (2026-06-08): disarm must clear our anchor (removing all our blocking,
+    /// R31) without overwriting the main ruleset or disabling PF globally — another VPN's rules and
+    /// PF reference stay intact (R29, R30, R32).
+    func testEmergencyDisarmClearsOurAnchorAndPersists() throws {
         pf.enabled = true
         pf.rulesLoaded = true
         try handler.setProtection(enabled: false)
-        XCTAssertFalse(pf.enabled, "the firewall is off — internet restored")
-        XCTAssertFalse(pf.rulesLoaded, "our block-all ruleset is removed from the kernel (no landmine)")
-        XCTAssertTrue(pf.ops.contains(.restore), "disarm restores the system default, not just pfctl -d")
+        XCTAssertFalse(pf.rulesLoaded, "our anchor is flushed — all our blocking removed (R31)")
+        XCTAssertTrue(pf.ops.contains(.clear), "disarm clears our anchor, never a global main-ruleset reset")
+        XCTAssertFalse(pf.ops.contains(.load), "disarm must not re-load anything")
         XCTAssertFalse(store.load().protectionEnabled, "disarm is persisted so the watchdog won't fight it")
     }
 

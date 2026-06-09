@@ -27,14 +27,24 @@ public final class PFRulesetManager {
     /// Path where the daemon writes the active ruleset (root-owned).
     public let rulesetURL: URL
     private let pfctlPath: String
+    /// Name of the dedicated anchor that holds all our rules. Everything is scoped to it.
+    private let anchorName: String
     /// Lists the current utun interfaces (injected for tests; live enumeration in production).
     private let tunnelInterfaces: () -> [String]
 
+    /// The enable reference token returned by `pfctl -E`. We hold exactly one while armed and release
+    /// it with `pfctl -X <token>` on disarm, so PF stays enabled as long as ANYONE (e.g. another VPN)
+    /// still references it — never disabled globally by us. Mutated only under the daemon's shared
+    /// apply-lock (or single-threaded at boot), so no separate lock is needed here.
+    private var enableToken: String?
+
     public init(rulesetURL: URL = URL(fileURLWithPath: KillSwitchConfig.stateDirectory).appendingPathComponent("killswitch.pf"),
                 pfctlPath: String = "/sbin/pfctl",
+                anchorName: String = KillSwitchConfig.pfAnchorName,
                 tunnelInterfaces: @escaping () -> [String] = NetworkInterfaces.utunNames) {
         self.rulesetURL = rulesetURL
         self.pfctlPath = pfctlPath
+        self.anchorName = anchorName
         self.tunnelInterfaces = tunnelInterfaces
     }
 
@@ -74,9 +84,14 @@ public final class PFRulesetManager {
         let ruleset = """
         # KillSwitch managed ruleset — generated automatically (PFRulesetManager).
         # Resting state: block all internet, allow only the whitelist.
+        # These rules live INSIDE our dedicated anchor (com.killswitch), loaded via
+        # `pfctl -a <anchor> -f`. `set` options (block-policy, skip) are NOT valid inside an anchor,
+        # so we omit them: the default block-policy is already "drop", and instead of `set skip on
+        # lo0` we pass loopback explicitly right below.
 
-        set block-policy drop
-        set skip on lo0
+        # Loopback is always allowed — replaces `set skip on lo0` (which an anchor can't set). Without
+        # it the `block all` below would break local IPC. `quick` so it wins immediately.
+        pass quick on lo0 all no state
 
         # Base: block all traffic in both directions (R1).
         block in all
@@ -112,18 +127,13 @@ public final class PFRulesetManager {
         table <lan> const { 10/8, 172.16/12, 192.168/16, 169.254/16 }
         \(lanPass)
 
-        # Apple's system anchors (AirDrop, sharing). Kept so Apple's own `pass quick` rules still
-        # work — but see the backstop right below. pf applies the LAST matching rule for non-quick
-        # rules, and this anchor is evaluated AFTER our "block out all": a non-quick `pass` injected
-        # here would become the last match and override default-deny, leaking the real IP on the
-        # physical link (R19).
-        anchor "com.apple/*"
-
-        # R19 backstop: slam the outbound door after the Apple anchor. Anything that fell through
-        # every `quick` pass above and was let out only by a non-quick rule inside com.apple is
-        # blocked here, since this is now the last matching rule. Our own traffic is unaffected —
-        # the utun/server/LAN passes are `quick` and match earlier. Outbound IPv4 only; IPv6 is
-        # already fully blocked above. (Apple's quick passes, e.g. AirDrop, are preserved.)
+        # R19 backstop: slam the outbound door as the last rule in our anchor. Our anchor is
+        # referenced from the system main ruleset AFTER `anchor "com.apple/*"` (U3 appends it at the
+        # end of /etc/pf.conf), so com.apple is evaluated first and OUR rules have the final say for
+        # non-quick matches. Anything that fell through every `quick` pass above and was let out only
+        # by a non-quick `pass` inside com.apple is blocked here. Our own traffic is unaffected — the
+        # utun/server/LAN passes are `quick` and match earlier. Outbound IPv4 only; IPv6 is already
+        # fully blocked above. (Apple's own `quick` passes, e.g. AirDrop, still win and are preserved.)
         block out quick inet all
         """
         // A trailing newline is required: pfctl treats an unterminated last line as a
@@ -144,48 +154,69 @@ public final class PFRulesetManager {
         try run(pfctlPath, ["-vnf", tmp.path])
     }
 
-    /// Validate, write, and load the ruleset. No `-E`, to avoid accumulating enable
-    /// references (KTD7); enabling the firewall is done separately via `enable()`.
+    /// Validate, write, and load the ruleset INTO OUR ANCHOR (`pfctl -a <anchor> -f`). We never load
+    /// into the system main ruleset, so a reload only ever replaces our own rules and can't disturb
+    /// the rules other VPN clients inserted (R29). Enabling PF is separate (`enable()`).
     public func load(_ ruleset: String) throws {
         try validate(ruleset)                       // never load the unvalidated
         try ensureDirectoryExists()
         try ruleset.write(to: rulesetURL, atomically: true, encoding: .utf8)
-        try run(pfctlPath, ["-f", rulesetURL.path])
+        try run(pfctlPath, ["-a", anchorName, "-f", rulesetURL.path])
     }
 
-    /// Enable the firewall. "Already enabled" is not an error.
+    /// Enable PF with a reference (`pfctl -E`) and remember the token. Reference-counted so PF is
+    /// disabled only when the LAST holder releases (the system /etc/pf.conf mandates `-E`/`-X` for
+    /// exactly this reason) — that is how we coexist with another VPN (R32). Idempotent: if we
+    /// already hold a reference AND PF is enabled, do nothing, so a watchdog reload never piles up
+    /// references. If PF was disabled out from under us, we re-acquire (the old token is already
+    /// dead, so overwriting it leaks nothing).
     public func enable() throws {
-        try runTolerating(pfctlPath, ["-e"], allowing: ["already enabled", "pf enabled"])
+        if enableToken != nil, isPFEnabled() { return }
+        let output = try run(pfctlPath, ["-E"])
+        if let token = Self.parseEnableToken(output) { enableToken = token }
     }
 
-    /// Disable the firewall (emergency disarm). "Already disabled" is not an error.
-    public func disable() throws {
-        try runTolerating(pfctlPath, ["-d"], allowing: ["already disabled", "pf disabled", "pf not enabled"])
-    }
-
-    /// Definitive OFF: replace our ruleset with the macOS system default, then disable PF.
+    /// Definitive OFF for OUR protection: flush only our anchor, then release our enable reference.
     ///
-    /// Disabling PF alone is NOT enough. `pfctl -d` stops enforcement but leaves our
-    /// `block ... out all` ruleset loaded in the kernel, and that survives sleep/wake. If anything
-    /// then re-enables PF (the system on wake, or a VPN client), our default-deny blocks all
-    /// traffic again — with no daemon left to undo it. Loading `/etc/pf.conf` removes our rules so
-    /// "off" is truly off. Best-effort on the reload (its stderr warning is normal) — we still
-    /// disable PF regardless.
-    public func restoreSystemDefault() throws {
-        _ = try? run(pfctlPath, ["-f", "/etc/pf.conf"])
-        try disable()
+    /// This replaces the old global reset (`pfctl -f /etc/pf.conf` + `pfctl -d`). Flushing the anchor
+    /// removes every rule we ever loaded — because we ONLY ever write into this anchor, clearing it
+    /// is always sufficient to drop all our blocking (R31), and no "block all" landmine is left in
+    /// the kernel. Releasing our `-E` reference (`-X`) lets PF disable itself only when no other
+    /// holder remains; another VPN's reference keeps PF up (R32). The system main ruleset and every
+    /// other anchor are untouched (R29, R30).
+    public func clearOurAnchor() throws {
+        try run(pfctlPath, ["-a", anchorName, "-F", "all"])   // flush only our anchor's rules + tables
+        if let token = enableToken {
+            // Best-effort: a failed release only leaks a reference (PF stays on, our anchor empty),
+            // which is fail-safe and resets on reboot (KTD). Never block the OFF path on it.
+            _ = try? run(pfctlPath, ["-X", token])
+            enableToken = nil
+        }
     }
 
-    /// Add a server to the table on the fly (no full reload). Idempotent.
+    /// Parse the token printed by `pfctl -E` ("... Token : 1234567890"). The token is what `-X`
+    /// needs to release exactly our reference without touching anyone else's.
+    static func parseEnableToken(_ output: String) -> String? {
+        for line in output.split(separator: "\n") where line.contains("Token") {
+            if let colon = line.lastIndex(of: ":") {
+                let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+                if !value.isEmpty { return value }
+            }
+        }
+        return nil
+    }
+
+    /// Add a server to the table on the fly (no full reload). Idempotent. Scoped to our anchor —
+    /// the `<servers>` table lives inside it, so the table commands must carry `-a <anchor>`.
     public func addServer(_ address: String) throws {
         guard Self.isValidIPv4(address) else { throw PFError.invalidAddress(address) }
-        try run(pfctlPath, ["-t", "servers", "-T", "add", "\(address)/32"])
+        try run(pfctlPath, ["-a", anchorName, "-t", "servers", "-T", "add", "\(address)/32"])
     }
 
     /// Remove a server from the table on the fly. Removing a missing one is not an error.
     public func removeServer(_ address: String) throws {
         guard Self.isValidIPv4(address) else { throw PFError.invalidAddress(address) }
-        try run(pfctlPath, ["-t", "servers", "-T", "delete", "\(address)/32"])
+        try run(pfctlPath, ["-a", anchorName, "-t", "servers", "-T", "delete", "\(address)/32"])
     }
 
     /// Whether the firewall is currently enabled (for status/watchdog).
@@ -194,15 +225,15 @@ public final class PFRulesetManager {
         return out.contains("Status: Enabled")
     }
 
-    /// Whether our managed ruleset is loaded (for the watchdog).
+    /// Whether our managed ruleset is loaded IN OUR ANCHOR (for the watchdog).
     ///
-    /// We match the `<servers>` table reference in the rules: our pass rules to/from `<servers>`
-    /// are ALWAYS present (the default macOS PF configuration has no such table), regardless of how
-    /// many utun tunnels are up. Matching the utun rules instead would falsely report "not loaded"
-    /// at boot before any VPN has connected (no utun yet), making the watchdog thrash. If the rules
-    /// were flushed (`pfctl -F rules` / `-F all`), the reference disappears and we reinstall.
+    /// We inspect our anchor (`pfctl -a <anchor> -sr`), not the main ruleset, and match the
+    /// `<servers>` reference: our pass rules to/from `<servers>` are ALWAYS present regardless of how
+    /// many utun tunnels are up. Matching the utun rules instead would falsely report "not loaded" at
+    /// boot before any VPN has connected (no utun yet), making the watchdog thrash. If our anchor was
+    /// flushed (`pfctl -a <anchor> -F all`), the reference disappears and we reinstall.
     public func isRulesetLoaded() -> Bool {
-        guard let result = try? exec(pfctlPath, ["-sr"]), result.status == 0 else { return false }
+        guard let result = try? exec(pfctlPath, ["-a", anchorName, "-sr"]), result.status == 0 else { return false }
         return result.output.contains("<servers>")
     }
 

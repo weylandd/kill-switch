@@ -7,14 +7,14 @@ public protocol PFControlling {
     func makeRuleset(from state: PersistedState) throws -> String
     func load(_ ruleset: String) throws
     func enable() throws
-    func disable() throws
-    /// Definitive OFF: remove our ruleset from the kernel and disable PF (not just disable).
-    func restoreSystemDefault() throws
+    /// Definitive OFF for our protection: flush ONLY our anchor and release our enable reference.
+    /// Never touches the system main ruleset and never disables PF globally (R29–R32).
+    func clearOurAnchor() throws
     func addServer(_ address: String) throws
     func removeServer(_ address: String) throws
     func isPFEnabled() -> Bool
-    /// Whether our managed ruleset is currently loaded (not flushed). Used by the watchdog
-    /// to tell a rules-flush apart from a healthy state.
+    /// Whether our managed ruleset is currently loaded in our anchor (not flushed). Used by the
+    /// watchdog to tell a flush apart from a healthy state.
     func isRulesetLoaded() -> Bool
 }
 

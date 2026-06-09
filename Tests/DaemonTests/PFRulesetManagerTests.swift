@@ -73,19 +73,48 @@ final class PFRulesetManagerTests: XCTestCase {
                       "the tunnel interface is trusted without state so mid-stream packets pass")
     }
 
-    /// R19 backstop: a final `block out quick inet all` must exist AND come after the Apple anchor,
-    /// so a non-quick `pass` injected into com.apple can't become the last matching rule and leak
-    /// the real IP. pf applies the last matching (non-quick) rule, so order here is the whole point.
-    func testAppleAnchorLeakBackstop() {
+    /// R19 backstop, anchor model: the final `block out quick inet all` must exist and be the LAST
+    /// rule in our anchor. Our anchor is referenced from /etc/pf.conf AFTER `anchor "com.apple/*"`
+    /// (U3), so com.apple is evaluated first and our backstop has the final word against a non-quick
+    /// `pass` leaking out of com.apple. We no longer nest `anchor "com.apple/*"` inside our own
+    /// ruleset — that would double-evaluate it; the main ruleset already does.
+    /// Returns the actual rule lines (comments and blank lines stripped) — pfctl ignores comments,
+    /// so invariants about the loaded ruleset must be checked against real directives, not prose.
+    private func ruleLines(_ r: String) -> [String] {
+        r.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+    }
+
+    func testBackstopIsLastAndNoNestedAppleAnchor() {
         let r = PFRulesetManager.makeRuleset(serverAddresses: ["89.106.86.61"], lanAllowed: true,
                                              tunnelInterfaces: ["utun7"])
-        XCTAssertTrue(r.contains("block out quick inet all"), "the R19 outbound backstop must be present")
-        guard let anchorIndex = r.range(of: "anchor \"com.apple/*\""),
-              let backstopIndex = r.range(of: "block out quick inet all") else {
-            return XCTFail("both the Apple anchor and the backstop must be present")
-        }
-        XCTAssertLessThan(anchorIndex.lowerBound, backstopIndex.lowerBound,
-                          "the backstop must come AFTER the Apple anchor, or it can't override an anchor leak")
+        let rules = ruleLines(r)
+        XCTAssertTrue(rules.contains("block out quick inet all"), "the R19 outbound backstop must be present")
+        XCTAssertFalse(rules.contains { $0.contains("anchor \"com.apple") },
+                       "com.apple is evaluated by the main ruleset, never nested inside our anchor")
+        XCTAssertEqual(rules.last, "block out quick inet all", "the backstop must be the final rule in our anchor")
+    }
+
+    /// Anchor validity: `set` options (block-policy, skip) are NOT valid inside a PF anchor, so the
+    /// ruleset must emit no `set` directive. Loopback protection is provided by an explicit
+    /// `pass quick on lo0` instead of a global loopback skip, or our `block all` would break local IPC.
+    func testNoSetStatementsAndLoopbackPass() {
+        let r = PFRulesetManager.makeRuleset(serverAddresses: [], lanAllowed: false)
+        let rules = ruleLines(r)
+        XCTAssertFalse(rules.contains { $0.hasPrefix("set ") }, "`set` is invalid in an anchor — no set directive")
+        XCTAssertTrue(rules.contains("pass quick on lo0 all no state"), "loopback must be passed explicitly")
+        // lo0 must pass BEFORE the block-all, or loopback would be blocked first.
+        guard let lo0 = rules.firstIndex(of: "pass quick on lo0 all no state"),
+              let blockIn = rules.firstIndex(of: "block in all") else { return XCTFail("both rules must be present") }
+        XCTAssertLessThan(lo0, blockIn, "lo0 pass must precede block-all")
+    }
+
+    /// `pfctl -E` prints a token used to release exactly our reference with `-X`. Parse it robustly.
+    func testParseEnableToken() {
+        XCTAssertEqual(PFRulesetManager.parseEnableToken("pf enabled\nToken : 1234567890"), "1234567890")
+        XCTAssertEqual(PFRulesetManager.parseEnableToken("Token : 42\nother"), "42")
+        XCTAssertNil(PFRulesetManager.parseEnableToken("pf enabled"), "no token line → nil")
+        XCTAssertNil(PFRulesetManager.parseEnableToken(""), "empty output → nil")
     }
 
     /// The backstop must not shadow our own traffic: the utun/server/LAN passes are `quick`, so they

@@ -15,6 +15,12 @@ public enum KillSwitchConfig {
     /// Daemon state directory. Root-only (created by the daemon on first start).
     public static let stateDirectory = "/Library/Application Support/KillSwitch"
 
+    /// Dedicated PF anchor that holds ALL of our firewall rules. Everything we load lives here so
+    /// that turning protection off only ever flushes this anchor — the system main ruleset and any
+    /// other VPN's rules are never touched (R29–R31). The same name is referenced from /etc/pf.conf
+    /// (added idempotently at first arm) so PF actually evaluates the anchor.
+    public static let pfAnchorName = "com.killswitch"
+
     /// Process-name hints for recognising a VPN client when building the approval-candidate list.
     /// Without this, default-deny blocks every app's outbound attempt and the candidate list fills
     /// with hundreds of unrelated connections (browsers, telemetry, background services) that the
