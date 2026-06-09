@@ -139,7 +139,7 @@ else
   log "$BLOCKED_PROBE — заблокирован ✓  Реальный IP НЕ утекает при упавшем VPN — ровно то, ради чего kill-switch."
 fi
 log "Счётчики нашего блокирующего правила (Packets > 0 = оно реально режет физический выход):"
-pfctl -v -a "$ANCHOR" -sr 2>/dev/null | grep -A2 'block out quick inet all' | sed 's/^/    /' || true
+pfctl -v -a "$ANCHOR" -sr 2>/dev/null | grep -A2 'out quick inet all' | sed 's/^/    /' || true
 log "Можешь снова включить VPN."
 
 head "6. ПРОВЕРКА (c) СОСУЩЕСТВОВАНИЕ: второй VPN жив, пока наша защита включена?"
