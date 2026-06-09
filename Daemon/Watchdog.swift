@@ -13,6 +13,7 @@ import KillSwitchShared
 public final class Watchdog {
     private let pf: PFControlling
     private let stateProvider: () -> PersistedState
+    private let sessionDisarm: SessionDisarm
     private let interval: TimeInterval
     private let log: (String) -> Void
 
@@ -39,12 +40,14 @@ public final class Watchdog {
     ///     needlessly reload on its first tick.
     public init(pf: PFControlling,
                 stateProvider: @escaping () -> PersistedState,
+                sessionDisarm: SessionDisarm = SessionDisarm(),
                 interval: TimeInterval = 5,
                 initialRuleset: String? = nil,
                 lock: NSLock = NSLock(),
                 log: @escaping (String) -> Void = Watchdog.defaultLog) {
         self.pf = pf
         self.stateProvider = stateProvider
+        self.sessionDisarm = sessionDisarm
         self.interval = interval
         self.lastApplied = initialRuleset
         self.applyLock = lock
@@ -88,6 +91,13 @@ public final class Watchdog {
 
         // Respect an explicit disarm — never re-block after the user turned protection off.
         guard state.protectionEnabled else { return false }
+
+        // Also respect a boot-session disarm marker. A just-relaunched daemon may not have corrected
+        // the persisted flag yet, and the app-side break-glass disarms WITHOUT touching the persisted
+        // state — in both cases the marker is the authoritative "off this session" signal. While it
+        // matches the current boot, stay completely hands-off (R28). This closes the window where the
+        // watchdog could re-arm right after a break-glass.
+        guard !sessionDisarm.isDisarmedThisSession() else { return false }
 
         // Rebuild the ruleset from the current state AND the current tunnels. If a new utun appeared
         // (VPN connected after boot), `desired` now includes it and differs from what's loaded.

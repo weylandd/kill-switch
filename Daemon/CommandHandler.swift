@@ -11,6 +11,7 @@ public final class CommandHandler {
     private let store: StateStore
     private let pf: PFControlling
     private let candidates: CandidateProviding
+    private let sessionDisarm: SessionDisarm
     private let log: (String) -> Void
 
     /// How recently a server connection counts as "tunnel up".
@@ -24,12 +25,14 @@ public final class CommandHandler {
     public init(store: StateStore,
                 pf: PFControlling,
                 candidates: CandidateProviding,
+                sessionDisarm: SessionDisarm = SessionDisarm(),
                 tunnelActiveWindow: TimeInterval = 30,
                 lock: NSLock = NSLock(),
                 log: @escaping (String) -> Void = CommandHandler.defaultLog) {
         self.store = store
         self.pf = pf
         self.candidates = candidates
+        self.sessionDisarm = sessionDisarm
         self.tunnelActiveWindow = tunnelActiveWindow
         self.lock = lock
         self.log = log
@@ -93,11 +96,12 @@ public final class CommandHandler {
         log("removed \(address)")
     }
 
-    /// Enable protection, or emergency-disarm it.
+    /// Enable protection, or disarm it for the rest of this boot session.
     ///
     /// The persisted flag is written first so the watchdog never re-blocks right after a disarm.
-    /// Disarm then disables PF outright, which restores the internet immediately — this is the
-    /// always-available OFF switch (KTD7), so it must definitively turn protection off.
+    /// Disarm also writes the boot-session marker (so a `KeepAlive` relaunch stays off, R24/R28) and
+    /// then flushes ONLY our anchor — the always-available OFF switch that restores the internet
+    /// immediately without disabling PF for any coexisting VPN.
     public func setProtection(enabled: Bool) throws {
         lock.lock(); defer { lock.unlock() }
         var state = store.load()
@@ -105,17 +109,24 @@ public final class CommandHandler {
         try store.save(state)                // persist intent first (the watchdog reads it)
 
         if enabled {
+            sessionDisarm.clearDisarmed()     // re-arming ends the session disarm (this boot)
             let ruleset = try pf.makeRuleset(from: state)
             try pf.load(ruleset)
             try pf.ensureAnchorReferenced()   // re-assert the main-ruleset reference if it drifted
             try pf.enable()
             log("protection enabled")
         } else {
+            // Record the durable session-disarm signal BEFORE touching the firewall, so a relaunch
+            // racing in this window already reads "disarmed" and won't re-arm (R24, R28). A marker
+            // write failure must NOT block restoring the internet, so it's logged, not fatal —
+            // worst case a relaunch re-arms, which is recoverable; a stuck block is not.
+            do { try sessionDisarm.setDisarmed() }
+            catch { log("WARNING: session-disarm marker not written (\(error)) — a relaunch may re-arm") }
             // Flush ONLY our anchor and release our enable reference — never a global PF reset. Our
             // rules live solely in our anchor, so clearing it removes all our blocking (R31) while
             // any other VPN's rules and the global PF state are left intact (R29, R30, R32).
             try pf.clearOurAnchor()
-            log("protection DISARMED — internet open")
+            log("protection DISARMED — internet open (session marker set)")
         }
     }
 

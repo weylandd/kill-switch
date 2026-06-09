@@ -18,7 +18,11 @@ let observer = ConnectionObserver()
 let eventLog = EventLog()
 let journal: (String) -> Void = { eventLog.record($0) }
 
-let bootstrap = DaemonBootstrap(store: store, pf: pf, log: journal)
+// One session-disarm helper shared by bootstrap, watchdog and the command handler, so the boot-arm
+// decision, the watchdog's hands-off check, and the disarm/re-arm writes all read the same marker.
+let sessionDisarm = SessionDisarm(log: journal)
+
+let bootstrap = DaemonBootstrap(store: store, pf: pf, sessionDisarm: sessionDisarm, log: journal)
 let bootRuleset: String
 do {
     bootRuleset = try bootstrap.start()
@@ -39,7 +43,7 @@ do {
 // by a concurrent watchdog reload.
 let pfLock = NSLock()
 
-let watchdog = Watchdog(pf: pf, stateProvider: { store.load() },
+let watchdog = Watchdog(pf: pf, stateProvider: { store.load() }, sessionDisarm: sessionDisarm,
                         initialRuleset: bootRuleset, lock: pfLock, log: journal)
 watchdog.start()
 
@@ -47,7 +51,8 @@ watchdog.start()
 observer.start()
 
 // Serve the menu-bar app: status, allow/remove server, protection on/off, LAN toggle (U7).
-let handler = CommandHandler(store: store, pf: pf, candidates: observer, lock: pfLock, log: journal)
+let handler = CommandHandler(store: store, pf: pf, candidates: observer,
+                             sessionDisarm: sessionDisarm, lock: pfLock, log: journal)
 let xpc = XPCService(handler: handler)
 xpc.resume()
 

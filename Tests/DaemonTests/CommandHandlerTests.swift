@@ -20,6 +20,7 @@ final class CommandHandlerTests: XCTestCase {
     private var store: StateStore!
     private var pf: FakePF!
     private var candidates: FakeCandidates!
+    private var sessionDisarm: SessionDisarm!
     private var handler: CommandHandler!
 
     override func setUpWithError() throws {
@@ -29,7 +30,11 @@ final class CommandHandlerTests: XCTestCase {
         store = StateStore(directory: tempDir)
         pf = FakePF()
         candidates = FakeCandidates()
-        handler = CommandHandler(store: store, pf: pf, candidates: candidates, log: { _ in })
+        // Hermetic session-disarm: a temp marker with a fixed boot id, so tests never read /Library.
+        sessionDisarm = SessionDisarm(markerURL: tempDir.appendingPathComponent("session-disarm"),
+                                      bootID: { "boot-test" }, log: { _ in })
+        handler = CommandHandler(store: store, pf: pf, candidates: candidates,
+                                 sessionDisarm: sessionDisarm, log: { _ in })
     }
 
     override func tearDownWithError() throws {
@@ -83,17 +88,22 @@ final class CommandHandlerTests: XCTestCase {
         XCTAssertTrue(pf.ops.contains(.clear), "disarm clears our anchor, never a global main-ruleset reset")
         XCTAssertFalse(pf.ops.contains(.load), "disarm must not re-load anything")
         XCTAssertFalse(store.load().protectionEnabled, "disarm is persisted so the watchdog won't fight it")
+        XCTAssertTrue(sessionDisarm.isDisarmedThisSession(),
+                      "disarm sets the boot-session marker so a relaunch stays off (R24, R28)")
     }
 
-    /// Re-enabling protection rebuilds default-deny and turns PF back on.
-    func testEnableProtectionReinstalls() throws {
+    /// Re-enabling protection rebuilds default-deny, turns PF back on, and clears the session marker
+    /// so a later relaunch arms normally.
+    func testEnableProtectionReinstallsAndClearsMarker() throws {
         try handler.allowServer(address: "89.106.86.61", label: "v2RayTun", port: 443)
         try handler.setProtection(enabled: false)
+        XCTAssertTrue(sessionDisarm.isDisarmedThisSession(), "disarmed → marker set")
         try handler.setProtection(enabled: true)
 
         XCTAssertTrue(pf.enabled)
         XCTAssertTrue(pf.ops.contains(.enable))
         XCTAssertTrue(store.load().protectionEnabled)
+        XCTAssertFalse(sessionDisarm.isDisarmedThisSession(), "re-arming clears the session marker")
         XCTAssertEqual(store.load().servers.count, 1, "the saved server survives a disarm/enable cycle")
     }
 

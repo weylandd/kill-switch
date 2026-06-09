@@ -6,8 +6,19 @@ import KillSwitchShared
 /// or kernel is needed; only the decision logic is exercised here.
 final class WatchdogTests: XCTestCase {
 
-    private func makeWatchdog(pf: FakePF, state: PersistedState, initial: String? = nil) -> Watchdog {
-        Watchdog(pf: pf, stateProvider: { state }, initialRuleset: initial, log: { _ in })
+    private func makeWatchdog(pf: FakePF, state: PersistedState, initial: String? = nil,
+                             disarmed: Bool = false) -> Watchdog {
+        Watchdog(pf: pf, stateProvider: { state }, sessionDisarm: sessionDisarm(disarmed: disarmed),
+                 initialRuleset: initial, log: { _ in })
+    }
+
+    /// A hermetic SessionDisarm at a unique temp path; pre-writes the marker when `disarmed` is true.
+    private func sessionDisarm(disarmed: Bool) -> SessionDisarm {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("wd-marker-" + UUID().uuidString)
+        let sd = SessionDisarm(markerURL: url, bootID: { "boot" }, log: { _ in })
+        if disarmed { try? sd.setDisarmed() }
+        return sd
     }
 
     /// Covers AE5: rules were flushed externally (PF still enabled) — the next check reinstalls.
@@ -89,6 +100,21 @@ final class WatchdogTests: XCTestCase {
 
         XCTAssertFalse(wd.reconcile(), "must not act while disarmed")
         XCTAssertTrue(pf.ops.isEmpty, "the OFF switch is respected — nothing is re-enabled")
+        XCTAssertFalse(pf.enabled, "the firewall stays off")
+    }
+
+    /// U6 (R28): while a boot-session disarm marker is set, the watchdog must stay hands-off EVEN IF
+    /// the persisted flag still says "protected" — the case after an app-side break-glass, which
+    /// disarms without touching persisted state. Without this, the watchdog would re-arm and re-block.
+    func testSessionDisarmMarkerLeavesAlone() {
+        let pf = FakePF()
+        pf.enabled = false        // break-glass already cleared our anchor + released the reference
+        pf.rulesLoaded = false
+        // Persisted state STILL says protected (break-glass didn't update it) — the marker must win.
+        let wd = makeWatchdog(pf: pf, state: PersistedState(protectionEnabled: true), disarmed: true)
+
+        XCTAssertFalse(wd.reconcile(), "must not re-arm while the session-disarm marker is set")
+        XCTAssertTrue(pf.ops.isEmpty, "nothing is reloaded or re-enabled")
         XCTAssertFalse(pf.enabled, "the firewall stays off")
     }
 
