@@ -59,7 +59,9 @@ done
 
 head "1. БОЕВОЙ ИД ЗАГРУЗКИ (kern.boottime) — основа «выключено в этом сеансе»"
 sysctl kern.boottime | sed 's/^/  /'
-log "Поле sec = $(sysctl -n kern.boottime | sed -n 's/.*sec = \([0-9]*\).*/\1/p') — это и есть стабильный ид сеанса."
+# Anchor the match at the start ('^{ sec = ') so we grab `sec`, not the later `usec`.
+log "Поле sec = $(sysctl -n kern.boottime | sed -n 's/^{ sec = \([0-9]*\).*/\1/p') — это и есть стабильный ид сеанса."
+log "(Боевой код читает это значение системным вызовом — то же число, без разбора текста.)"
 log "Проверка живучести: значение НЕ должно меняться без перезагрузки и ДОЛЖНО смениться после неё."
 
 head "2. ДОБАВЛЯЮ ССЫЛКУ НА НАШ ОТСЕК В $PFCONF (идемпотентно)"
@@ -116,15 +118,29 @@ log "Reference Count > 1 означает: PF держат и другие (на
 
 sleep 3   # let the VPN client settle
 
-head "5. ПРОВЕРКА (a) DEFAULT-DENY: НЕразрешённый адрес ДОЛЖЕН быть заблокирован"
+head "5. ГРУБАЯ ПРОВЕРКА default-deny (с ПОДНЯТЫМ VPN она НЕ показательна)"
+log "ВАЖНО: пока VPN включён, почти весь трафик идёт через доверенный туннель (utun), который мы"
+log "намеренно разрешаем. Поэтому доступность ниже НЕ означает утечку — настоящий тест это шаг 5c."
 if curl -sS -o /dev/null --max-time 5 "https://$BLOCKED_PROBE" 2>/dev/null; then
-  log "$BLOCKED_PROBE — ДОСТУПЕН ✗  (плохо: значит наш отсек НЕ блокирует — утечка возможна)"
+  log "$BLOCKED_PROBE — доступен (скорее всего через туннель — норма при включённом VPN)"
 else
-  log "$BLOCKED_PROBE — заблокирован ✓  (хорошо: default-deny работает)"
+  log "$BLOCKED_PROBE — заблокирован"
 fi
 
 head "5b. ПРОВЕРКА: разрешённый сервер $SERVER всё ещё достижим (своё не режем)"
 if nc -G 4 -z "$SERVER" 443 2>/dev/null; then log "$SERVER:443 — ДОСТУПЕН ✓"; else log "$SERVER:443 — НЕдоступен ✗"; fi
+
+head "5c. НАСТОЯЩИЙ ТЕСТ УТЕЧКИ — при УПАВШЕМ VPN чужой адрес ДОЛЖЕН быть заблокирован"
+log "Это главная проверка: именно момент, когда VPN отвалился, и реальный IP мог бы утечь."
+read -r -p "  >> Отключи VPN в его приложении, дождись пропажи туннеля, затем нажми Enter (или просто Enter — пропустить): " _
+if curl -sS -o /dev/null --max-time 6 "https://$BLOCKED_PROBE" 2>/dev/null; then
+  log "$BLOCKED_PROBE — ДОСТУПЕН ✗  Если VPN реально отключён — это УТЕЧКА: наш отсек не держит default-deny."
+else
+  log "$BLOCKED_PROBE — заблокирован ✓  Реальный IP НЕ утекает при упавшем VPN — ровно то, ради чего kill-switch."
+fi
+log "Счётчики нашего блокирующего правила (Packets > 0 = оно реально режет физический выход):"
+pfctl -v -a "$ANCHOR" -sr 2>/dev/null | grep -A2 'block out quick inet all' | sed 's/^/    /' || true
+log "Можешь снова включить VPN."
 
 head "6. ПРОВЕРКА (c) СОСУЩЕСТВОВАНИЕ: второй VPN жив, пока наша защита включена?"
 log "Туннели сейчас (адрес на utun = туннель поднят):"
@@ -141,8 +157,10 @@ if [ -n "${KS_TOKEN:-}" ]; then
   KS_TOKEN=""   # released — don't double-release in cleanup
 fi
 pfctl -s info 2>/dev/null | grep -E 'Status|Reference' | sed 's/^/  /'
-log "ВЕРДИКТ (b): если Status всё ещё Enabled и Reference Count >= 1 — PF остался включён ДЛЯ ДРУГИХ ✓"
-log "            если Status стал Disabled, а второй VPN держал ссылку — модель надо разобрать ✗"
+log "ВЕРДИКТ (b): если на шаге 0 PF был Disabled и твой VPN НЕ использует системный фаервол"
+log "            (как v2RayTun) — то после снятия нашей ссылки PF гаснет, и это ПРАВИЛЬНО: держать"
+log "            его было некому. Если бы существовал VPN, реально опирающийся на PF, он удержал бы"
+log "            ссылку и Status остался бы Enabled. На твоей машине второго PF-VPN нет — ломать нечего."
 
 head "8. ПРОВЕРКА (c) ИНТЕРНЕТ ВЕРНУЛСЯ после снятия нашей блокировки"
 if curl -sS -o /dev/null --max-time 6 "https://$BLOCKED_PROBE" 2>/dev/null; then
