@@ -67,6 +67,9 @@ chmod 644 "$PLIST"
 
 echo "Загружаю и запускаю демон…"
 launchctl bootout "system/$LABEL" 2>/dev/null || true
+# Wait for the old instance to fully unload — `bootstrap` races a not-yet-finished `bootout` and
+# fails with "Input/output error" (errno 5) if the label is still registered.
+sleep 2
 # A previous run of ks-uninstall.sh writes a persistent `disable` override (so the daemon can't
 # relaunch). That override survives reboot and makes `bootstrap` fail with "Input/output error",
 # so clear it before bootstrapping a fresh test install.
