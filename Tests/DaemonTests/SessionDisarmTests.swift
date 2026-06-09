@@ -69,12 +69,14 @@ final class SessionDisarmTests: XCTestCase {
         XCTAssertFalse(sd.isDisarmedThisSession())
     }
 
-    /// The live system boot id is a non-empty integer and stable across back-to-back reads (no reboot
-    /// happened between them).
-    func testSystemBootIDIsStableInteger() {
+    /// The live system boot id is a non-empty UUID (kern.bootsessionuuid) with no whitespace, and is
+    /// stable across back-to-back reads (no reboot — and, unlike kern.boottime, no clock step — can
+    /// change it between two reads).
+    func testSystemBootIDIsStableUUID() {
         guard let a = SessionDisarm.systemBootID() else { return XCTFail("system boot id must be readable") }
         XCTAssertFalse(a.isEmpty)
-        XCTAssertNotNil(Int(a), "boot id is the integer `sec` of kern.boottime")
+        XCTAssertNotNil(UUID(uuidString: a), "kern.bootsessionuuid is a UUID string")
+        XCTAssertFalse(a.contains(where: \.isWhitespace), "no stray whitespace/newline in the boot id")
         XCTAssertEqual(a, SessionDisarm.systemBootID(), "stable within the same boot session")
     }
 }

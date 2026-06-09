@@ -10,13 +10,16 @@ import KillSwitchDaemonCore
 // Shared collaborators — one StateStore (its lock serializes writes) and one PF engine across
 // bootstrap, watchdog and the command handler.
 let store = StateStore()
-let pf = PFRulesetManager()
 let observer = ConnectionObserver()
 
 // Local-only event journal (U9, R21). Routed as the `log:` sink for the components below so key
 // actions (startup, protection on/off, server add/remove, watchdog reinstalls) are recorded.
 let eventLog = EventLog()
 let journal: (String) -> Void = { eventLog.record($0) }
+
+// One PF engine shared across bootstrap, watchdog and the command handler; its warnings (e.g. an
+// unparsed -E token) go to the journal too.
+let pf = PFRulesetManager(log: journal)
 
 // One session-disarm helper shared by bootstrap, watchdog and the command handler, so the boot-arm
 // decision, the watchdog's hands-off check, and the disarm/re-arm writes all read the same marker.

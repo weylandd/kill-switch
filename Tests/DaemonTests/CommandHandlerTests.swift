@@ -92,6 +92,22 @@ final class CommandHandlerTests: XCTestCase {
                       "disarm sets the boot-session marker so a relaunch stays off (R24, R28)")
     }
 
+    /// Covers #9: if the session-disarm marker CANNOT be written (boot id unavailable), the OFF path
+    /// must STILL restore the internet — clear our anchor and persist the disarmed flag. The marker
+    /// failure is logged, not fatal: a relaunch re-arming is recoverable; a stuck block is not.
+    func testDisarmStillClearsAnchorWhenMarkerWriteFails() throws {
+        let failingMarker = SessionDisarm(markerURL: tempDir.appendingPathComponent("session-disarm"),
+                                          bootID: { nil }, log: { _ in })   // boot id unavailable → setDisarmed throws
+        let handler = CommandHandler(store: store, pf: pf, candidates: candidates,
+                                     sessionDisarm: failingMarker, log: { _ in })
+        pf.enabled = true; pf.rulesLoaded = true
+
+        XCTAssertNoThrow(try handler.setProtection(enabled: false), "the OFF path must not throw on a marker failure")
+        XCTAssertTrue(pf.ops.contains(.clear), "our anchor is still cleared — internet restored")
+        XCTAssertFalse(store.load().protectionEnabled, "the disarmed flag is still persisted")
+        XCTAssertFalse(failingMarker.isDisarmedThisSession(), "the marker truly could not be written")
+    }
+
     /// Re-enabling protection rebuilds default-deny, turns PF back on, and clears the session marker
     /// so a later relaunch arms normally.
     func testEnableProtectionReinstallsAndClearsMarker() throws {

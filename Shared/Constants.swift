@@ -22,11 +22,11 @@ public enum KillSwitchConfig {
     public static let pfAnchorName = "com.killswitch"
 
     /// Marker file (in the state dir) recording "protection was deliberately disarmed in THIS boot
-    /// session". It holds the boot-session id (the `sec` field of `kern.boottime`). Present AND
+    /// session". It holds the boot-session id (`kern.bootsessionuuid`, a per-boot UUID). Present AND
     /// matching the live boot id ⇒ stay disarmed across a daemon relaunch (R24, R28); a real reboot
-    /// changes the boot id, so the marker reads as stale and protection re-arms (R27). Written by the
+    /// changes the UUID, so the marker reads as stale and protection re-arms (R27). Written by the
     /// daemon on a normal disarm and by the app's break-glass (as root) — both store the same plain
-    /// boot id, so the format MUST stay a single bare integer.
+    /// boot id, so the format MUST stay the bare UUID and nothing else.
     public static let sessionDisarmMarkerName = "session-disarm"
 
     /// Absolute path of the session-disarm marker. Shared so the daemon (Swift) and the break-glass

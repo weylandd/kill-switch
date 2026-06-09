@@ -124,6 +124,11 @@ final class PFRulesetManagerTests: XCTestCase {
         // A file without a trailing newline still produces a well-formed result.
         XCTAssertEqual(PFRulesetManager.pfConfByAddingAnchorReference(to: "anchor \"com.apple/*\"", anchorName: "com.killswitch"),
                        "anchor \"com.apple/*\"\nanchor \"com.killswitch\"\n")
+        // Empty input (e.g. a 0-byte pf.conf) yields just our line — but the engine never feeds an
+        // empty string here: ensureAnchorReferenced now reads pf.conf STRICTLY (a failed read throws),
+        // so this is a pure-helper edge, not the destructive "read failed → wipe pf.conf" path.
+        XCTAssertEqual(PFRulesetManager.pfConfByAddingAnchorReference(to: "", anchorName: "com.killswitch"),
+                       "anchor \"com.killswitch\"\n")
     }
 
     /// `pfctl -E` prints a token used to release exactly our reference with `-X`. Parse it robustly.
@@ -220,5 +225,87 @@ final class PFRulesetManagerTests: XCTestCase {
             lanAllowed: true
         ))
         XCTAssertNoThrow(try mgr.validate(ruleset))
+    }
+
+    // MARK: - Reference-counted enable / anchor-only OFF (injected pfctl runner — no root needed)
+
+    /// Builds a fake pfctl runner: records every call's args and answers `-E` / `-s info` from a tiny
+    /// fake state, so the reference-count logic can be exercised without touching /dev/pf.
+    private func recordingRunner(pfEnabled: @escaping () -> Bool,
+                                 onEnable: @escaping () -> Void,
+                                 record: @escaping ([String]) -> Void)
+        -> (String, [String], TimeInterval) throws -> (status: Int32, output: String) {
+        return { _, args, _ in
+            record(args)
+            if args == ["-E"] { onEnable(); return (0, "pf enabled\nToken : 4242") }
+            if args == ["-s", "info"] { return (0, pfEnabled() ? "Status: Enabled" : "Status: Disabled") }
+            return (0, "")
+        }
+    }
+
+    /// Covers #10: enable() must NOT re-run `pfctl -E` while it already holds a reference AND PF is on,
+    /// or every watchdog reload would accumulate enable references.
+    func testEnableIsIdempotentWhilePFEnabled() throws {
+        var calls: [[String]] = []; var pfOn = false
+        let mgr = PFRulesetManager(commandRunner: recordingRunner(pfEnabled: { pfOn },
+                                                                  onEnable: { pfOn = true },
+                                                                  record: { calls.append($0) }))
+        try mgr.enable()
+        try mgr.enable()
+        XCTAssertEqual(calls.filter { $0 == ["-E"] }.count, 1,
+                       "the second enable() is a no-op while the reference is held and PF is on")
+    }
+
+    /// enable() must RE-acquire if PF was disabled out from under us (e.g. an external `pfctl -d`).
+    func testEnableReacquiresWhenPFWasDisabled() throws {
+        var calls: [[String]] = []; var pfOn = false
+        let mgr = PFRulesetManager(commandRunner: recordingRunner(pfEnabled: { pfOn },
+                                                                  onEnable: { pfOn = true },
+                                                                  record: { calls.append($0) }))
+        try mgr.enable()
+        pfOn = false                     // someone disabled PF
+        try mgr.enable()
+        XCTAssertEqual(calls.filter { $0 == ["-E"] }.count, 2, "re-acquire -E when PF was disabled externally")
+    }
+
+    /// clearOurAnchor flushes ONLY our anchor, THEN releases EXACTLY our token — never a global reset.
+    func testClearOurAnchorFlushesThenReleasesOurToken() throws {
+        var calls: [[String]] = []; var pfOn = false
+        let mgr = PFRulesetManager(anchorName: "com.killswitch",
+                                   commandRunner: recordingRunner(pfEnabled: { pfOn },
+                                                                  onEnable: { pfOn = true },
+                                                                  record: { calls.append($0) }))
+        try mgr.enable()
+        try mgr.clearOurAnchor()
+        guard let flush = calls.firstIndex(of: ["-a", "com.killswitch", "-F", "all"]),
+              let release = calls.firstIndex(of: ["-X", "4242"]) else {
+            return XCTFail("expected an anchor flush and a token release")
+        }
+        XCTAssertLessThan(flush, release, "flush our anchor before releasing the reference")
+        XCTAssertFalse(calls.contains(["-d"]), "never disables PF globally")
+        XCTAssertFalse(calls.contains(where: { $0.contains("/etc/pf.conf") }), "never rewrites the main ruleset")
+    }
+
+    /// Covers #1: ensureAnchorReferenced APPENDS our line and PRESERVES the existing pf.conf — it must
+    /// never replace the system ruleset.
+    func testEnsureAnchorReferencedAppendsAndPreservesPfConf() throws {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("pfconf-\(UUID().uuidString)")
+        try "scrub-anchor \"com.apple/*\"\nanchor \"com.apple/*\"\n".write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let mgr = PFRulesetManager(pfConfPath: tmp.path, anchorName: "com.killswitch",
+                                   commandRunner: { _, _, _ in (0, "") })   // pfctl -f / -sr faked
+        try mgr.ensureAnchorReferenced()
+        let after = try String(contentsOf: tmp, encoding: .utf8)
+        XCTAssertTrue(after.contains("anchor \"com.apple/*\""), "system Apple anchors preserved")
+        XCTAssertTrue(after.contains("anchor \"com.killswitch\""), "our anchor appended at the end")
+    }
+
+    /// Covers #1: a missing/unreadable pf.conf must THROW — never silently write a one-line file that
+    /// would erase the system ruleset.
+    func testEnsureAnchorReferencedThrowsOnUnreadablePfConf() {
+        let mgr = PFRulesetManager(pfConfPath: "/nonexistent/dir/pf.conf", anchorName: "com.killswitch",
+                                   commandRunner: { _, _, _ in (0, "") })
+        XCTAssertThrowsError(try mgr.ensureAnchorReferenced(),
+                             "an unreadable pf.conf must throw, not overwrite the system ruleset")
     }
 }

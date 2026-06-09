@@ -9,10 +9,10 @@ import KillSwitchShared
 /// internet by driving PF directly with root, asking the user for their admin password once.
 ///
 /// It runs two steps as root, in this order:
-///   1. Write the boot-session disarm marker — so a daemon that is alive (just hung) reads it and
-///      stays disarmed instead of re-arming within seconds (R24, R28). The marker holds the current
-///      boot id, which we read in-app (unprivileged) and embed as a literal integer, so the root
-///      shell needs no sysctl/sed/quotes — eliminating any escaping or injection surface.
+///   1. Write the boot-session disarm marker (atomically: temp file + `mv`) — so a daemon that is
+///      alive (just hung) reads it and stays disarmed instead of re-arming within seconds (R24, R28).
+///      The marker holds the current boot id (a UUID), which we read in-app (unprivileged) and embed
+///      as a validated literal, so the root shell needs no sysctl/sed — no escaping/injection surface.
 ///   2. Flush ONLY our PF anchor (`pfctl -a com.killswitch -F all`) — removes all our blocking
 ///      because we only ever write into that anchor (R31), WITHOUT disabling PF globally or
 ///      rewriting the main ruleset, so a coexisting VPN keeps working (R29, R30, R32).
@@ -38,8 +38,11 @@ public enum EmergencyOff {
     /// until it is dismissed, so call it OFF the main actor (it spawns a subprocess and waits).
     public static func run() -> Outcome {
         // Read the boot id in-app (unprivileged): it's the same value the daemon reads on this boot,
-        // so the marker we write will match and hold the disarm across a relaunch this session.
-        guard let bootID = SessionDisarm.systemBootID(), !bootID.isEmpty, bootID.allSatisfy(\.isNumber) else {
+        // so the marker we write will match and hold the disarm across a relaunch this session. It is
+        // a UUID (kern.bootsessionuuid); validate it is only hex digits and hyphens so nothing with a
+        // shell metacharacter can ever reach the embedded command.
+        guard let bootID = SessionDisarm.systemBootID(), !bootID.isEmpty,
+              bootID.allSatisfy({ $0.isHexDigit || $0 == "-" }) else {
             return .failed("Не удалось определить сеанс загрузки. Выключите защиту через меню приложения.")
         }
         let marker = KillSwitchConfig.sessionDisarmMarkerPath
@@ -47,12 +50,15 @@ public enum EmergencyOff {
         let anchor = KillSwitchConfig.pfAnchorName
         // No shell- or AppleScript-injection surface: `marker`/`stateDir`/`anchor` are compile-time
         // constants (single-quoted; they contain a space but no quotes/backslashes), `bootID` is a
-        // bare validated integer, and the AppleScript is handed to osascript as a single argv entry
-        // (never through a shell). The shell contains no double quotes or backslashes, so it embeds
-        // into the AppleScript string literal without extra escaping.
+        // validated UUID (hex + hyphens, single-quoted), and the AppleScript is handed to osascript as
+        // a single argv entry (never through a shell). The shell contains no double quotes or
+        // backslashes, so it embeds into the AppleScript string literal without extra escaping.
+        // The marker is written to a temp file then atomically renamed (mv), so a watchdog read can
+        // never observe a half-written/empty marker and re-arm in the gap.
         let shell = "/bin/mkdir -p '\(stateDir)'; "
-                  + "/bin/echo \(bootID) > '\(marker)'; "
-                  + "/bin/chmod 600 '\(marker)'; "
+                  + "/bin/echo '\(bootID)' > '\(marker).tmp'; "
+                  + "/bin/chmod 600 '\(marker).tmp'; "
+                  + "/bin/mv -f '\(marker).tmp' '\(marker)'; "
                   + "/sbin/pfctl -a \(anchor) -F all 2>/dev/null; exit 0"
         let appleScript = "do shell script \"\(shell)\" with administrator privileges"
 

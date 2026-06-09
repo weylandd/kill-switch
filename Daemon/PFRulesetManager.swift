@@ -29,12 +29,18 @@ public final class PFRulesetManager {
     private let pfctlPath: String
     /// System main ruleset file. PF only evaluates anchors referenced from here, so we add our
     /// anchor reference to it once (idempotently). This is the ONLY file we ever touch outside our
-    /// own state dir, and only additively.
-    private let pfConfPath = "/etc/pf.conf"
+    /// own state dir, and only additively. Injectable so the add/reload path can be unit-tested
+    /// against a temp file without root.
+    private let pfConfPath: String
     /// Name of the dedicated anchor that holds all our rules. Everything is scoped to it.
     private let anchorName: String
     /// Lists the current utun interfaces (injected for tests; live enumeration in production).
     private let tunnelInterfaces: () -> [String]
+    /// Runs a pfctl subprocess. Injected in tests (record args / return canned output) so the
+    /// reference-counted enable/disarm logic can be exercised without root; defaults to the real
+    /// bounded-timeout subprocess in production.
+    private let commandRunner: (_ launchPath: String, _ args: [String], _ timeout: TimeInterval) throws -> (status: Int32, output: String)
+    private let log: (String) -> Void
 
     /// The enable reference token returned by `pfctl -E`. We hold exactly one while armed and release
     /// it with `pfctl -X <token>` on disarm, so PF stays enabled as long as ANYONE (e.g. another VPN)
@@ -44,12 +50,22 @@ public final class PFRulesetManager {
 
     public init(rulesetURL: URL = URL(fileURLWithPath: KillSwitchConfig.stateDirectory).appendingPathComponent("killswitch.pf"),
                 pfctlPath: String = "/sbin/pfctl",
+                pfConfPath: String = "/etc/pf.conf",
                 anchorName: String = KillSwitchConfig.pfAnchorName,
-                tunnelInterfaces: @escaping () -> [String] = NetworkInterfaces.utunNames) {
+                tunnelInterfaces: @escaping () -> [String] = NetworkInterfaces.utunNames,
+                commandRunner: ((String, [String], TimeInterval) throws -> (status: Int32, output: String))? = nil,
+                log: @escaping (String) -> Void = PFRulesetManager.defaultLog) {
         self.rulesetURL = rulesetURL
         self.pfctlPath = pfctlPath
+        self.pfConfPath = pfConfPath
         self.anchorName = anchorName
         self.tunnelInterfaces = tunnelInterfaces
+        self.commandRunner = commandRunner ?? PFRulesetManager.liveSubprocess
+        self.log = log
+    }
+
+    public static let defaultLog: (String) -> Void = { message in
+        FileHandle.standardError.write(Data(("[PFRulesetManager] " + message + "\n").utf8))
     }
 
     // MARK: - Ruleset generation (pure logic, tested without root)
@@ -88,7 +104,7 @@ public final class PFRulesetManager {
         let ruleset = """
         # KillSwitch managed ruleset — generated automatically (PFRulesetManager).
         # Resting state: block all internet, allow only the whitelist.
-        # These rules live INSIDE our dedicated anchor (com.killswitch), loaded via
+        # These rules live INSIDE our dedicated anchor, loaded via
         # `pfctl -a <anchor> -f`. `set` options (block-policy, skip) are NOT valid inside an anchor,
         # so we omit them: the default block-policy is already "drop", and instead of `set skip on
         # lo0` we pass loopback explicitly right below.
@@ -177,7 +193,14 @@ public final class PFRulesetManager {
     public func enable() throws {
         if enableToken != nil, isPFEnabled() { return }
         let output = try run(pfctlPath, ["-E"])
-        if let token = Self.parseEnableToken(output) { enableToken = token }
+        if let token = Self.parseEnableToken(output) {
+            enableToken = token
+        } else {
+            // PF is enabled but we couldn't capture the token, so we can't release exactly our
+            // reference later. Fail-safe (PF stays up, our anchor controls blocking; the reference
+            // resets on reboot) — but log it so a lingering reference is diagnosable, not silent.
+            log("WARNING: pfctl -E succeeded but no token parsed — enable reference will leak until reboot: \(output.prefix(120))")
+        }
     }
 
     /// Definitive OFF for OUR protection: flush only our anchor, then release our enable reference.
@@ -220,7 +243,12 @@ public final class PFRulesetManager {
     /// reload is the one moment we re-read pf.conf (which can transiently drop other tools' dynamic
     /// anchors), so we keep it to the minimum.
     public func ensureAnchorReferenced() throws {
-        let contents = (try? String(contentsOfFile: pfConfPath, encoding: .utf8)) ?? ""
+        // Read STRICTLY: a failed read must NOT collapse to "" — that would make pfConfByAddingAnchor-
+        // Reference produce a one-line file that we then write over /etc/pf.conf, erasing the system
+        // Apple anchors (and persisting across reboot). A missing/unreadable file throws instead; the
+        // caller treats it as non-fatal (boot retries via launchd; the watchdog logs and retries next
+        // tick). On any real system /etc/pf.conf exists and is root-readable, so this never fires.
+        let contents = try String(contentsOfFile: pfConfPath, encoding: .utf8)
         if let updated = Self.pfConfByAddingAnchorReference(to: contents, anchorName: anchorName) {
             try updated.write(toFile: pfConfPath, atomically: true, encoding: .utf8)
             try run(pfctlPath, ["-f", pfConfPath])          // newly added → load it into the live ruleset
@@ -296,10 +324,15 @@ public final class PFRulesetManager {
         }
     }
 
-    /// Run a subprocess with a bounded timeout. A hung `/dev/pf` (sleep/wake, kernel issue) must not
+    /// Run a pfctl command through the injected runner (the real subprocess in production).
+    private func exec(_ launchPath: String, _ args: [String], timeout: TimeInterval = 10) throws -> (status: Int32, output: String) {
+        try commandRunner(launchPath, args, timeout)
+    }
+
+    /// Real subprocess with a bounded timeout. A hung `/dev/pf` (sleep/wake, kernel issue) must not
     /// block the daemon forever — that would freeze the watchdog (which holds the shared lock) and
     /// make the OFF path unresponsive. On timeout the process is terminated and an error is thrown.
-    private func exec(_ launchPath: String, _ args: [String], timeout: TimeInterval = 10) throws -> (status: Int32, output: String) {
+    private static func liveSubprocess(_ launchPath: String, _ args: [String], _ timeout: TimeInterval) throws -> (status: Int32, output: String) {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: launchPath)
         proc.arguments = args
@@ -335,15 +368,6 @@ public final class PFRulesetManager {
                                         status: result.status, output: result.output)
         }
         return result.output
-    }
-
-    private func runTolerating(_ path: String, _ args: [String], allowing: [String]) throws {
-        let result = try exec(path, args)
-        if result.status == 0 { return }
-        let lower = result.output.lowercased()
-        if allowing.contains(where: { lower.contains($0.lowercased()) }) { return }
-        throw PFError.commandFailed(command: "\(path) \(args.joined(separator: " "))",
-                                    status: result.status, output: result.output)
     }
 
     private func capture(_ path: String, _ args: [String]) throws -> String {

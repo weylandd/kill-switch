@@ -120,7 +120,7 @@ public final class Watchdog {
 
         // Reapply in the same order as boot: load rules, (re-add the reference if it drifted), enable.
         let reason = !pfOn ? "PF was off"
-            : (!referenced ? "anchor reference missing from /etc/pf.conf"
+            : (!referenced ? "anchor reference missing from the live ruleset"
             : (!rulesLoaded ? "our anchor was flushed" : "tunnels changed"))
         do {
             try pf.load(desired)

@@ -110,6 +110,8 @@ final class DaemonBootstrapTests: XCTestCase {
         XCTAssertFalse(pf.ops.contains(.load), "must NOT load rules while disarmed this session")
         XCTAssertTrue(pf.ops.contains(.clear), "stale rules of ours are cleared instead")
         XCTAssertFalse(pf.rulesLoaded, "our anchor is left clear")
+        XCTAssertFalse(store.load().protectionEnabled,
+                       "disarmed-this-session must NOT reset the persisted flag to protected (R28)")
     }
 
     /// Covers AE1 (R27): a marker from a PREVIOUS boot is stale — arm and drop the stale marker.

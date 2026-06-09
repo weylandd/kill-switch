@@ -57,12 +57,14 @@ for i in $(ifconfig -l | tr ' ' '\n' | grep '^utun'); do
   a=$(ifconfig "$i" 2>/dev/null | awk '/inet /{print $2}'); [ -n "$a" ] && log "  $i -> $a"
 done
 
-head "1. БОЕВОЙ ИД ЗАГРУЗКИ (kern.boottime) — основа «выключено в этом сеансе»"
-sysctl kern.boottime | sed 's/^/  /'
-# Anchor the match at the start ('^{ sec = ') so we grab `sec`, not the later `usec`.
-log "Поле sec = $(sysctl -n kern.boottime | sed -n 's/^{ sec = \([0-9]*\).*/\1/p') — это и есть стабильный ид сеанса."
-log "(Боевой код читает это значение системным вызовом — то же число, без разбора текста.)"
-log "Проверка живучести: значение НЕ должно меняться без перезагрузки и ДОЛЖНО смениться после неё."
+head "1. БОЕВОЙ ИД ЗАГРУЗКИ (kern.bootsessionuuid) — основа «выключено в этом сеансе»"
+# The daemon keys the disarm marker on kern.bootsessionuuid (a per-boot UUID), NOT kern.boottime:
+# boottime is wall-clock-derived and shifts on an NTP/clock step (we saw it move 1s mid-session),
+# which would wrongly invalidate the marker. The UUID changes ONLY on a real reboot.
+log "kern.bootsessionuuid = $(sysctl -n kern.bootsessionuuid 2>/dev/null) — стабильный ид сеанса (его и пишет демон)."
+log "Для сравнения kern.boottime (НЕ используется — сдвигается при коррекции часов):"
+sysctl kern.boottime | sed 's/^/    /'
+log "Проверка живучести: UUID НЕ должен меняться без перезагрузки (даже при сдвиге часов) и ДОЛЖЕН смениться после неё."
 
 head "2. ДОБАВЛЯЮ ССЫЛКУ НА НАШ ОТСЕК В $PFCONF (идемпотентно)"
 # The main ruleset only evaluates anchors it references. Append ours at the END so it is evaluated

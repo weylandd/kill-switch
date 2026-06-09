@@ -4,16 +4,23 @@ import Foundation
 ///
 /// The kill-switch must stay off after a user disarms — even when launchd relaunches the daemon
 /// seconds later (`KeepAlive`) — yet still come back protected after a real reboot (R27, R28). We
-/// distinguish "relaunch" from "reboot" with a marker file keyed on the boot-session id (the `sec`
-/// field of `kern.boottime`, which is stable within a boot and changes when the machine reboots):
+/// distinguish "relaunch" from "reboot" with a marker file keyed on the boot-session id
+/// (`kern.bootsessionuuid`, a UUID generated fresh each boot, stable within a boot and changed only
+/// by a real reboot):
 ///
 ///   - disarm  → write the current boot id into the marker;
 ///   - relaunch in the same session → marker's boot id == live boot id → still disarmed;
 ///   - reboot  → live boot id changed → marker is stale → treated as armed (protection re-arms).
 ///
+/// Why `kern.bootsessionuuid` and not `kern.boottime`: boottime is wall-clock derived, so an NTP
+/// correction or a manual clock change shifts it WITHOUT a reboot (observed live: the value moved by
+/// 1s mid-session). That would make a fresh marker read as "stale" and silently re-arm protection on
+/// the next relaunch. The boot-session UUID is immune to clock changes — it only changes on a real
+/// reboot — which is exactly the "same boot session?" question the marker asks.
+///
 /// Lives in Shared so the daemon and the app's break-glass agree on the path, format, and rules.
 /// The break-glass writes the marker from a root shell (a one-liner), so the on-disk format MUST
-/// stay a single bare integer — the boot id and nothing else.
+/// stay the bare boot id and nothing else.
 public final class SessionDisarm {
 
     public enum MarkerError: Error { case bootIDUnavailable }
@@ -66,20 +73,27 @@ public final class SessionDisarm {
         return stored == live
     }
 
-    /// The boot-session id: the `sec` field of `kern.boottime`, read via the sysctl C API (no
-    /// subprocess). Stable within a boot, changes across reboot — exactly the signal we need.
+    /// The boot-session id: `kern.bootsessionuuid`, read via the sysctl C API (no subprocess). It is a
+    /// UUID string, fresh per boot and immune to wall-clock changes — unlike `kern.boottime`, which an
+    /// NTP/clock step can shift mid-session and silently invalidate the marker.
     public static func systemBootID() -> String? {
-        var tv = timeval()
-        var size = MemoryLayout<timeval>.stride
-        guard sysctlbyname("kern.boottime", &tv, &size, nil, 0) == 0 else { return nil }
-        return String(tv.tv_sec)
+        var size = 0
+        // First call sizes the buffer; second fills it.
+        guard sysctlbyname("kern.bootsessionuuid", nil, &size, nil, 0) == 0, size > 0 else { return nil }
+        var buffer = [CChar](repeating: 0, count: size)
+        guard sysctlbyname("kern.bootsessionuuid", &buffer, &size, nil, 0) == 0 else { return nil }
+        let id = String(cString: buffer).trimmingCharacters(in: .whitespacesAndNewlines)
+        return id.isEmpty ? nil : id
     }
 
     // MARK: - Internals
 
     private func ensureDirectoryExists() throws {
         let dir = markerURL.deletingLastPathComponent()
-        if !FileManager.default.fileExists(atPath: dir.path) {
+        var isDir: ObjCBool = false
+        // Mirror StateStore / PFRulesetManager: only skip creation when the path already IS a
+        // directory, not when a plain file occupies the slot.
+        if !FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir) {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
         }
