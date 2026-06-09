@@ -1,18 +1,20 @@
 ---
 title: "macOS privileged daemon (SMAppService) + PF kill-switch: packaging and pfctl gotchas"
 date: 2026-06-07
-last_updated: 2026-06-08
+last_updated: 2026-06-09
 category: tooling-decisions
 module: KillSwitch app + daemon packaging
 problem_type: tooling_decision
 component: tooling
-severity: medium
+severity: high
 applies_when:
   - "Building a macOS app with a privileged LaunchDaemon via SMAppService"
   - "Generating the Xcode project with XcodeGen (project.yml)"
   - "Writing or applying a PF (pfctl) ruleset from code"
   - "A PF default-deny kill-switch coexisting with a NetworkExtension VPN (utun)"
-tags: [macos, pfctl, smappservice, xcodegen, launchd, kill-switch, swift, utun, networkextension, pflog]
+  - "Making a PF kill-switch coexist with another PF user via a dedicated anchor + reference counting"
+  - "Needing a deliberate action to survive a daemon relaunch but reset on a real reboot"
+tags: [macos, pfctl, smappservice, xcodegen, launchd, kill-switch, swift, utun, networkextension, pf-anchor, bootsessionuuid]
 ---
 
 # macOS privileged daemon (SMAppService) + PF kill-switch: packaging and pfctl gotchas
@@ -83,13 +85,16 @@ because `/dev/pf` is blocked — unrelated to syntax. Keep live pfctl checks as 
 integration test gated by an env var (`KS_RUN_INTEGRATION=1`); rely on pure string-shape
 tests in the normal suite.
 
-**Enable/disable:** use `pfctl -e` / `pfctl -d` (not `-E`, which reference-counts and
-accumulates enable tokens). Load rules with `pfctl -f` (no `-E`).
+**Enable/disable:** ~~use `pfctl -e` / `pfctl -d` (not `-E`, which reference-counts and
+accumulates enable tokens). Load rules with `pfctl -f` (no `-E`).~~ **SUPERSEDED 2026-06-09** —
+the reference-count avoidance was the wrong instinct; `-E`/`-X` is exactly how you coexist with
+another PF user. See "Surgical PF anchor + reference-counted enable + session-scoped OFF" below.
 
 **Apple anchors:** `anchor "com.apple/*"` matches Apple's own `/etc/pf.conf` usage (pfctl
 prints it back as `anchor "/*"` — a display quirk, not a loss of the namespace). Whether it
 preserves AirDrop/sharing AND whether it can let traffic escape default-deny must be
-verified live with root — keep it flagged as an open question, don't assume.
+verified live with root — keep it flagged as an open question, don't assume. (Update 2026-06-09:
+we stopped nesting `anchor "com.apple/*"` inside our ruleset entirely — see the anchor section below.)
 
 **postBuildScript to embed the daemon + plist (XcodeGen `project.yml`):**
 
@@ -133,9 +138,12 @@ state tracking — `pass out quick inet from any to <servers> no state` + `pass 
 the block-all rules loaded in the kernel, and **PF rules survive sleep/wake** (not a full reboot).
 Anything that later re-enables PF (macOS on wake, or the VPN client) re-blocks everything — with no
 daemon left to undo it. Symptom: wake from sleep to no internet "as if it turned on by itself";
-`pfctl -d` helps for a moment then it comes back. **Fix:** the OFF path runs `pfctl -f /etc/pf.conf`
-(load the system default, removing our rules) then `pfctl -d`. Use it on every off path: emergency
-disarm, the SIGTERM handler, and the uninstall script.
+`pfctl -d` helps for a moment then it comes back. ~~**Fix:** the OFF path runs `pfctl -f /etc/pf.conf`
+(load the system default, removing our rules) then `pfctl -d`.~~ **Fix SUPERSEDED 2026-06-09:** the
+`pfctl -f /etc/pf.conf` + `pfctl -d` reset wiped a coexisting VPN's PF rules and disabled PF for
+everyone. The lesson still holds — leaving block-all loaded is a landmine — but the correct OFF is to
+put all our rules in a dedicated anchor and flush ONLY that anchor (`pfctl -a <anchor> -F all`),
+never the main ruleset and never global `-d`. See the anchor section below.
 
 **4. A watchdog must never override a user disarm.** A self-healing watchdog (reinstall rules if PF
 drops) will fight the OFF switch: it can read the old "enabled" state microseconds before a disarm
@@ -196,7 +204,12 @@ crash / kill / the boot window is a leak window). A strict mode becomes safe to 
 **Daemon-independent emergency OFF ("break-glass").** Because PF rules live in the kernel
 independently of the daemon, a hung/dead daemon can leave the internet blocked with no GUI way out.
 The robust escape does not talk to the daemon at all: from the unprivileged app, spawn
-`osascript -e 'do shell script "…" with administrator privileges'` to run, as root,
+`osascript -e 'do shell script "…" with administrator privileges'` to run a privileged shell as root.
+**(2026-06-09: the privileged steps changed — `launchctl bootout` + `pfctl -f /etc/pf.conf` + `pfctl -d`
+below was replaced by "write a boot-session marker + flush only our anchor"; the marker keeps a still-
+alive daemon from re-arming WITHOUT killing it, and the anchor flush avoids the global reset. See the
+anchor + session-OFF section below. The osascript/argv/nullDevice mechanics here remain correct.)**
+The original Stage-A steps ran, as root,
 `launchctl bootout system/<label>` (stop the daemon so the watchdog can't re-arm) then
 `pfctl -f /etc/pf.conf` + `pfctl -d`. Use a subprocess (not in-process `NSAppleScript`) so no
 Apple-events entitlement is needed under the hardened runtime. Order matters: stop the daemon first,
@@ -230,9 +243,106 @@ rebooting." Don't over-invest in boot-time blocking.
 server IP. Worth adopting *after* confirming the local VPN client's tunnel process runs as root —
 otherwise it breaks the tunnel.
 
+## Surgical PF anchor + reference-counted enable + session-scoped OFF (2026-06-09)
+
+A real incident exposed two design-level flaws in the Stage-A/B model: turning protection OFF (a) was
+undoable — the `KeepAlive` daemon relaunched and force-re-armed within seconds — and (b) broke other
+VPNs, because the OFF path rewrote the whole main ruleset (`pfctl -f /etc/pf.conf`) and disabled PF
+globally (`pfctl -d`). The fix moves ALL our rules into a dedicated anchor with reference-counted
+enable, and makes OFF hold for the boot session via a marker. Verified live on the real machine.
+
+**Put all rules in a dedicated anchor; flush only that anchor on OFF.** Load with
+`pfctl -a com.killswitch -f <rules>`, never into the main ruleset. OFF = `pfctl -a com.killswitch -F
+all` (flush only our anchor) — because we ONLY ever write into our anchor, clearing it removes all our
+blocking, and the main ruleset + every other tool's rules are untouched. The system `/etc/pf.conf`
+header literally says this: *"Care must be taken to ensure that the main ruleset does not get flushed,
+as the nested anchors rely on the anchor point... some system services would dynamically insert
+anchors into the main ruleset."* Our old `pfctl -f /etc/pf.conf` violated exactly that.
+
+**Use reference-counted `-E` / `-X`, not `-e` / `-d`** (this reverses the Stage-A advice above). The
+same `/etc/pf.conf` header: *"each component which utilizes PF is responsible for enabling and
+disabling PF via -E and -X... PF is disabled only when the last enable reference is released."* So:
+arm with `pfctl -E` and **keep the token it prints** (`Token : 1234…`); disarm with `pfctl -X <token>`.
+That way disarming our protection only drops OUR reference — if another VPN also holds one, PF stays
+enabled for them. Make `enable()` idempotent (skip `-E` if you already hold a token AND PF is on, so a
+watchdog reload doesn't pile up references; re-acquire if PF was disabled out from under you). A leaked
+token on an ungraceful crash is acceptable: PF stays on with our anchor empty (= no blocking), and the
+count resets on reboot — fail-safe.
+
+**The main ruleset must REFERENCE the anchor or it's never evaluated.** PF only evaluates anchors named
+in the loaded main ruleset, and stock `/etc/pf.conf` references only `com.apple/*`. Append
+`anchor "com.killswitch"` to `/etc/pf.conf` once (idempotent, additive) and reload the main ruleset
+once so it takes effect — the ONE main-ruleset touch, done at install/first-arm and re-added by the
+watchdog only if it drifts out of the live ruleset (check via `pfctl -sr`). Append it at the END, AFTER
+`anchor "com.apple/*"`, so our backstop stays the last word (the R19 fix, now via main-ruleset ordering
+instead of nesting com.apple inside our rules).
+
+**Gotcha: `set` directives are INVALID inside an anchor.** Our old ruleset had `set block-policy drop`
+and `set skip on lo0`; loading them with `pfctl -a <anchor> -f` fails — `set` only works in the main
+ruleset. `block-policy drop` is already the default, so drop it. Replace `set skip on lo0` with an
+explicit `pass quick on lo0 all no state` at the top of the anchor (or `block all` would break local
+IPC). Guard it with a test that the rendered ruleset emits no `set ` directive.
+
+**Gotcha: `kern.boottime` is NOT a stable boot-session id — use `kern.bootsessionuuid`.** To make a
+disarm survive a daemon relaunch but reset on a real reboot, key a marker on the boot session. The
+obvious choice, `kern.boottime` (`sysctlbyname`, the `tv_sec` field), is WRONG: it is wall-clock
+derived, so an NTP correction or manual clock change shifts it WITHOUT a reboot. **Observed live:** the
+value moved by 1 second mid-session. A shifted boottime makes a fresh marker read as "stale" and
+silently re-arms protection on the next relaunch. `kern.bootsessionuuid` (a per-boot UUID string) is
+immune to clock changes and only changes on a real reboot — exactly the "same boot session?" question:
+
+```swift
+public static func systemBootID() -> String? {          // stable per boot, immune to clock steps
+    var size = 0
+    guard sysctlbyname("kern.bootsessionuuid", nil, &size, nil, 0) == 0, size > 0 else { return nil }
+    var buffer = [CChar](repeating: 0, count: size)
+    guard sysctlbyname("kern.bootsessionuuid", &buffer, &size, nil, 0) == 0 else { return nil }
+    let id = String(cString: buffer).trimmingCharacters(in: .whitespacesAndNewlines)
+    return id.isEmpty ? nil : id
+}
+```
+
+The disarm marker is a root-owned file holding that bare id. `isDisarmedThisSession()` is true only
+when the marker exists AND its id == the live id; any other case (missing/empty/unreadable marker, or
+an unreadable id) reads as "not disarmed" so the daemon fails toward protected. The boot path arms
+UNLESS disarmed-this-session; the watchdog short-circuits to a no-op while the marker matches (even if
+the persisted flag still says "protected" — the break-glass case). Break-glass writes the marker (read
+the id IN-APP, embed it as a validated literal so the root shell needs no `sysctl`/`sed`) then flushes
+only our anchor — a still-alive hung daemon reads the marker and stays disarmed instead of being killed.
+
+**Gotcha: a "best-effort" read of `/etc/pf.conf` can silently destroy it.** This pattern is a latent
+data-loss bug:
+
+```swift
+let contents = (try? String(contentsOfFile: "/etc/pf.conf")) ?? ""   // BUG: read failure → ""
+// ...append our anchor line to `contents`, then write it back over /etc/pf.conf...
+```
+
+If the read fails, `contents` becomes `""`, you append one line, and write a **one-line `/etc/pf.conf`**
+over the real file — erasing every system Apple anchor, persistently. Read STRICTLY (`try String(...)`)
+so a failed read throws and the caller treats it as non-fatal, never as "empty file → overwrite."
+
+**Make pfctl testable without root.** Inject the subprocess runner (a closure defaulting to the real
+bounded-timeout `Process`); tests pass a fake that records args and returns canned output. That alone
+unit-tests the reference-count logic (enable idempotency / re-acquire, flush-then-`-X`), the anchor
+flush scoping, and the strict-read pf.conf guard — none of which were reachable when pfctl was hardwired.
+
+*Verified live (2026-06-09):* with the VPN disconnected, a non-whitelisted address was blocked (no leak);
+disarm → `launchctl kickstart -k` relaunch left protection OFF (the daemon logged "Booted DISARMED for
+this session"); a forged stale marker (different id) re-armed on relaunch and reloaded the full ruleset
+with the backstop last; `killall -STOP` (hung daemon) → break-glass restored the internet, wrote the
+marker, and the relaunch stayed off. On this Mac PF was *Disabled* at rest (the user's v2RayTun /
+NEPacketTunnelProvider does NOT use PF), so releasing our only `-E` reference correctly turned PF off —
+there was no second PF-using VPN to coexist with, so nothing of someone-else's to break.
+
+**Install gotcha:** `launchctl bootstrap` fails with `Input/output error` (errno 5) when a prior run
+left a persistent `launchctl disable system/<label>` override (which is correct for a *permanent*
+uninstall, and survives reboot). Run `launchctl enable system/<label>` before `bootstrap` on reinstall.
+
 ## Related
 
-- Plan: `docs/plans/2026-06-07-001-feat-vpn-kill-switch-macos-plan.md`
+- Plan: `docs/plans/2026-06-08-001-fix-killswitch-reliable-off-plan.md` (this session); Stage-A plan:
+  `docs/plans/2026-06-07-001-feat-vpn-kill-switch-macos-plan.md`
 - Deferred review items / real-machine checks: `docs/review-followups-stage-a.md`,
   `docs/review-followups-stage-bcd.md`
 - Verification helper: `scripts/ks-diagnose.sh` (time-boxed, auto-restoring)
