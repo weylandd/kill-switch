@@ -21,6 +21,18 @@ public enum KillSwitchConfig {
     /// (added idempotently at first arm) so PF actually evaluates the anchor.
     public static let pfAnchorName = "com.killswitch"
 
+    /// Marker file (in the state dir) recording "protection was deliberately disarmed in THIS boot
+    /// session". It holds the boot-session id (the `sec` field of `kern.boottime`). Present AND
+    /// matching the live boot id ⇒ stay disarmed across a daemon relaunch (R24, R28); a real reboot
+    /// changes the boot id, so the marker reads as stale and protection re-arms (R27). Written by the
+    /// daemon on a normal disarm and by the app's break-glass (as root) — both store the same plain
+    /// boot id, so the format MUST stay a single bare integer.
+    public static let sessionDisarmMarkerName = "session-disarm"
+
+    /// Absolute path of the session-disarm marker. Shared so the daemon (Swift) and the break-glass
+    /// admin shell (one-liner) write/read the exact same location.
+    public static let sessionDisarmMarkerPath = stateDirectory + "/" + sessionDisarmMarkerName
+
     /// Process-name hints for recognising a VPN client when building the approval-candidate list.
     /// Without this, default-deny blocks every app's outbound attempt and the candidate list fills
     /// with hundreds of unrelated connections (browsers, telemetry, background services) that the
