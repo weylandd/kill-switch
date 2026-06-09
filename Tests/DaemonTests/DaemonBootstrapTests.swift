@@ -37,15 +37,23 @@ final class FakePF: PFControlling {
 final class DaemonBootstrapTests: XCTestCase {
 
     private var tempDir: URL!
+    private var markerURL: URL!
 
     override func setUpWithError() throws {
         tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("BootstrapTests-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        markerURL = tempDir.appendingPathComponent("session-disarm")
     }
 
     override func tearDownWithError() throws {
         try? FileManager.default.removeItem(at: tempDir)
+    }
+
+    /// A hermetic SessionDisarm pointing at the test temp dir with a controllable boot id — so tests
+    /// never read the real /Library marker.
+    private func sessionDisarm(boot: @escaping () -> String?) -> SessionDisarm {
+        SessionDisarm(markerURL: markerURL, bootID: boot, log: { _ in })
     }
 
     /// Covers AE1: state is read first; the rules (default-deny) load BEFORE PF is enabled.
@@ -54,7 +62,7 @@ final class DaemonBootstrapTests: XCTestCase {
         try store.save(PersistedState(servers: [ServerRule(address: "89.106.86.61", label: "v2RayTun")]))
         let pf = FakePF()
 
-        try DaemonBootstrap(store: store, pf: pf, log: { _ in }).start()
+        try DaemonBootstrap(store: store, pf: pf, sessionDisarm: sessionDisarm(boot: { "b1" }), log: { _ in }).start()
 
         XCTAssertEqual(pf.ops, [.make, .load, .reference, .enable],
                        "order: build → load → reference the anchor → enable")
@@ -67,23 +75,56 @@ final class DaemonBootstrapTests: XCTestCase {
         let store = StateStore(directory: tempDir)   // nothing saved
         let pf = FakePF()
 
-        try DaemonBootstrap(store: store, pf: pf, log: { _ in }).start()
+        try DaemonBootstrap(store: store, pf: pf, sessionDisarm: sessionDisarm(boot: { "b1" }), log: { _ in }).start()
 
         XCTAssertEqual(pf.ops, [.make, .load, .reference, .enable])
         XCTAssertTrue(pf.enabled, "default-deny + enabled even with no servers")
     }
 
-    /// KTD7: a stored "disarmed" flag does not survive a reboot — boot protected and
-    /// bring the store back to "protected".
+    /// Covers AE1 (R27): a persisted "disarmed" flag with NO current-session marker is a fresh boot —
+    /// arm and bring the store back to "protected".
     func testDisarmedStateBootsProtectedAndResetsFlag() throws {
         let store = StateStore(directory: tempDir)
         try store.save(PersistedState(protectionEnabled: false))
         let pf = FakePF()
 
-        try DaemonBootstrap(store: store, pf: pf, log: { _ in }).start()
+        try DaemonBootstrap(store: store, pf: pf, sessionDisarm: sessionDisarm(boot: { "b1" }), log: { _ in }).start()
 
         XCTAssertTrue(pf.enabled, "after reboot protection is on, not silently open")
         XCTAssertTrue(store.load().protectionEnabled, "the stored flag is brought back to 'protected'")
+    }
+
+    /// Covers AE2 (R24, R28): a disarm marker for the CURRENT boot session (a KeepAlive relaunch) must
+    /// NOT arm — protection stays off and our anchor is cleared, not loaded.
+    func testDisarmedThisSessionDoesNotArm() throws {
+        let store = StateStore(directory: tempDir)
+        try store.save(PersistedState(protectionEnabled: false))
+        let pf = FakePF()
+        pf.enabled = true; pf.rulesLoaded = true   // a previous instance had left rules up
+        let sd = sessionDisarm(boot: { "boot-current" })
+        try sd.setDisarmed()                         // user disarmed in THIS boot session
+
+        try DaemonBootstrap(store: store, pf: pf, sessionDisarm: sd, log: { _ in }).start()
+
+        XCTAssertFalse(pf.ops.contains(.enable), "must NOT enable while disarmed this session")
+        XCTAssertFalse(pf.ops.contains(.load), "must NOT load rules while disarmed this session")
+        XCTAssertTrue(pf.ops.contains(.clear), "stale rules of ours are cleared instead")
+        XCTAssertFalse(pf.rulesLoaded, "our anchor is left clear")
+    }
+
+    /// Covers AE1 (R27): a marker from a PREVIOUS boot is stale — arm and drop the stale marker.
+    func testStaleMarkerArmsAndIsCleared() throws {
+        let store = StateStore(directory: tempDir)
+        let pf = FakePF()
+        var boot = "old-boot"
+        let sd = sessionDisarm(boot: { boot })
+        try sd.setDisarmed()                         // disarmed in a previous session
+        boot = "new-boot"                            // reboot: boot id changed
+
+        try DaemonBootstrap(store: store, pf: pf, sessionDisarm: sd, log: { _ in }).start()
+
+        XCTAssertTrue(pf.enabled, "a new boot re-arms despite the previous session's marker")
+        XCTAssertFalse(sd.isDisarmedThisSession(), "the stale marker is cleared during arm")
     }
 
     /// On a ruleset-build failure, PF is not enabled (no partially-applied state).
@@ -92,7 +133,7 @@ final class DaemonBootstrapTests: XCTestCase {
         let pf = FakePF()
         pf.failMake = true
 
-        XCTAssertThrowsError(try DaemonBootstrap(store: store, pf: pf, log: { _ in }).start())
+        XCTAssertThrowsError(try DaemonBootstrap(store: store, pf: pf, sessionDisarm: sessionDisarm(boot: { "b1" }), log: { _ in }).start())
         XCTAssertFalse(pf.ops.contains(.enable), "on a generation error the firewall is not enabled")
         XCTAssertFalse(pf.enabled)
     }
