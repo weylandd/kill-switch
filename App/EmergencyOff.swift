@@ -8,13 +8,19 @@ import KillSwitchShared
 /// the internet. This is the guaranteed escape hatch (KTD7, the hard requirement): it restores the
 /// internet by driving PF directly with root, asking the user for their admin password once.
 ///
-/// It runs three steps as root, in this order:
-///   1. `launchctl bootout` the daemon — so its watchdog can't re-arm the rules right after we flush.
-///   2. `pfctl -f /etc/pf.conf` — replace our block-all ruleset with the macOS default.
-///   3. `pfctl -d` — disable PF.
-/// Step 1 must come first: while the daemon is alive its watchdog would reinstall our rules within
-/// seconds of a flush, so stopping it first closes that race. Steps run even if earlier ones fail
-/// (`;`, not `&&`), and the script always exits 0 so a benign non-zero (e.g. "service not loaded")
+/// It runs two steps as root, in this order:
+///   1. Write the boot-session disarm marker — so a daemon that is alive (just hung) reads it and
+///      stays disarmed instead of re-arming within seconds (R24, R28). The marker holds the current
+///      boot id, which we read in-app (unprivileged) and embed as a literal integer, so the root
+///      shell needs no sysctl/sed/quotes — eliminating any escaping or injection surface.
+///   2. Flush ONLY our PF anchor (`pfctl -a com.killswitch -F all`) — removes all our blocking
+///      because we only ever write into that anchor (R31), WITHOUT disabling PF globally or
+///      rewriting the main ruleset, so a coexisting VPN keeps working (R29, R30, R32).
+///
+/// The marker is written FIRST so even if the live daemon's watchdog fires right after the flush, it
+/// already sees "disarmed this session" and stays hands-off. We no longer `launchctl bootout` the
+/// daemon (the marker, not killing it, is what holds the disarm) and never touch global PF state.
+/// Steps run even if one fails (`;`, not `&&`), and the script always exits 0 so a benign non-zero
 /// isn't reported as an error.
 ///
 /// Implemented by spawning `osascript` (not in-process NSAppleScript) on purpose: the privilege
@@ -31,12 +37,23 @@ public enum EmergencyOff {
     /// Run the privileged emergency OFF. Shows the standard macOS admin-password dialog and blocks
     /// until it is dismissed, so call it OFF the main actor (it spawns a subprocess and waits).
     public static func run() -> Outcome {
-        let label = KillSwitchConfig.daemonLabel
-        // No shell-injection surface: `label` is a compile-time constant with no quotes/metacharacters,
-        // and the AppleScript is handed to osascript as a single argv entry (never through a shell).
-        let shell = "/bin/launchctl bootout system/\(label) 2>/dev/null; "
-                  + "/sbin/pfctl -f /etc/pf.conf 2>/dev/null; "
-                  + "/sbin/pfctl -d 2>/dev/null; exit 0"
+        // Read the boot id in-app (unprivileged): it's the same value the daemon reads on this boot,
+        // so the marker we write will match and hold the disarm across a relaunch this session.
+        guard let bootID = SessionDisarm.systemBootID(), !bootID.isEmpty, bootID.allSatisfy(\.isNumber) else {
+            return .failed("Не удалось определить сеанс загрузки. Выключите защиту через меню приложения.")
+        }
+        let marker = KillSwitchConfig.sessionDisarmMarkerPath
+        let stateDir = KillSwitchConfig.stateDirectory
+        let anchor = KillSwitchConfig.pfAnchorName
+        // No shell- or AppleScript-injection surface: `marker`/`stateDir`/`anchor` are compile-time
+        // constants (single-quoted; they contain a space but no quotes/backslashes), `bootID` is a
+        // bare validated integer, and the AppleScript is handed to osascript as a single argv entry
+        // (never through a shell). The shell contains no double quotes or backslashes, so it embeds
+        // into the AppleScript string literal without extra escaping.
+        let shell = "/bin/mkdir -p '\(stateDir)'; "
+                  + "/bin/echo \(bootID) > '\(marker)'; "
+                  + "/bin/chmod 600 '\(marker)'; "
+                  + "/sbin/pfctl -a \(anchor) -F all 2>/dev/null; exit 0"
         let appleScript = "do shell script \"\(shell)\" with administrator privileges"
 
         let proc = Process()

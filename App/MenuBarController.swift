@@ -13,6 +13,10 @@ final class MenuBarController: ObservableObject {
     @Published var manualAddress: String = ""
     @Published var manualError: String?
     @Published var lastError: String?
+    /// Transient success banner shown right after a disarm or break-glass, so OFF is never a silent
+    /// no-op (R33). Distinct from the steady disarmed icon/toggle: it confirms the action just worked
+    /// and the internet should be back. Auto-clears after a few seconds.
+    @Published var offConfirmation: String?
     /// True while the privileged emergency OFF is running (its admin-password dialog is up).
     @Published var isEmergencyRunning = false
     /// True while a manual "retry connection" is in flight, so the button can show feedback.
@@ -20,6 +24,7 @@ final class MenuBarController: ObservableObject {
 
     private let client = XPCClient()
     private var pollTask: Task<Void, Never>?
+    private var confirmationTask: Task<Void, Never>?
 
     init() {
         // Start polling at construction (the controller lives for the whole app), so the menu-bar
@@ -94,9 +99,33 @@ final class MenuBarController: ObservableObject {
     func setProtection(_ on: Bool) {
         Task {
             let (ok, err) = await client.setProtection(enabled: on)
-            if !ok { lastError = err }
+            if !ok {
+                lastError = err
+            } else if on {
+                clearOffConfirmation()       // re-armed — drop any lingering "off" banner
+            } else {
+                lastError = nil
+                flashOffConfirmation()       // disarm succeeded — confirm visibly (R33)
+            }
             await refresh()
         }
+    }
+
+    /// Show the transient "protection off, internet should work" banner and auto-clear it after a few
+    /// seconds. Cancels any prior timer so repeated actions don't leave a stale banner.
+    private func flashOffConfirmation() {
+        offConfirmation = "Защита выключена — интернет должен работать."
+        confirmationTask?.cancel()
+        confirmationTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.offConfirmation = nil
+        }
+    }
+
+    private func clearOffConfirmation() {
+        confirmationTask?.cancel()
+        offConfirmation = nil
     }
 
     /// Break-glass emergency OFF (KTD7). Bypasses the daemon entirely and restores the internet by
@@ -110,7 +139,7 @@ final class MenuBarController: ObservableObject {
             let outcome = await Task.detached { EmergencyOff.run() }.value
             isEmergencyRunning = false
             switch outcome {
-            case .restored:  lastError = nil
+            case .restored:  lastError = nil; flashOffConfirmation()   // confirm visibly (R33)
             case .cancelled: break                        // user dismissed the prompt; nothing changed
             case .failed(let msg): lastError = "Аварийный сброс: \(msg)"
             }

@@ -35,6 +35,14 @@ struct ControlPanelView: View {
             Text("KillSwitch").font(.title3).bold()
             StatusHeader(state: controller.state)
 
+            // Transient confirmation that OFF actually worked — shown after a disarm or break-glass,
+            // distinct from the steady disarmed state, so the user is never left guessing (R33).
+            if let confirmation = controller.offConfirmation {
+                Label(confirmation, systemImage: "checkmark.circle.fill")
+                    .font(.caption).foregroundStyle(.green)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Divider()
 
             switch controller.state {
