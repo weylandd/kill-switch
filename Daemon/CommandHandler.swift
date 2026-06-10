@@ -122,6 +122,13 @@ public final class CommandHandler {
             throw TrustError.signatureNotVerifiable
         }
         var state = store.load()
+        // If the same app was previously trusted under a DIFFERENT Team ID (it was re-signed — the
+        // "trust suspended" case, R13/U8), drop the stale record and clear its suspended signal, so
+        // re-trusting fully resolves the warning rather than leaving a dead entry behind.
+        let stale = state.trustedClients.filter { $0.teamID != teamID && $0.processNames.contains(label) }
+        for old in stale { signals?.setSuspended(old.teamID, false) }
+        state.trustedClients.removeAll { $0.teamID != teamID && $0.processNames.contains(label) }
+        signals?.setSuspended(teamID, false)
         if let idx = state.trustedClients.firstIndex(where: { $0.teamID == teamID }) {
             // Already trusted — just make sure this dialing process name is recorded (for the
             // per-(team, process) rate cap, KTD6).
@@ -149,6 +156,7 @@ public final class CommandHandler {
         var state = store.load()
         state.trustedClients.removeAll { $0.teamID == teamID }
         try store.save(state)
+        signals?.setSuspended(teamID, false)   // a removed client is no longer "suspended"
         log("untrusted client [\(teamID)]")
     }
 

@@ -179,6 +179,7 @@ final class CommandHandlerTrustTests: XCTestCase {
     private var store: StateStore!
     private var pf: FakePF!
     private var verifier: FakeSignatureVerifier!
+    private var signals: AutoApprovalSignals!
     private var handler: CommandHandler!
     private var immediatePassCount = 0
 
@@ -189,10 +190,11 @@ final class CommandHandlerTrustTests: XCTestCase {
         store = StateStore(directory: tempDir)
         pf = FakePF()
         verifier = FakeSignatureVerifier()
+        signals = AutoApprovalSignals()
         let sessionDisarm = SessionDisarm(markerURL: tempDir.appendingPathComponent("session-disarm"),
                                           bootID: { "boot-test" }, log: { _ in })
         handler = CommandHandler(store: store, pf: pf, candidates: FakeCandidates(),
-                                 sessionDisarm: sessionDisarm, verifier: verifier,
+                                 sessionDisarm: sessionDisarm, verifier: verifier, signals: signals,
                                  onTrustGranted: { [weak self] in self?.immediatePassCount += 1 },
                                  log: { _ in })
     }
@@ -225,6 +227,23 @@ final class CommandHandlerTrustTests: XCTestCase {
         }
         XCTAssertTrue(store.load().trustedClients.isEmpty)
         XCTAssertEqual(immediatePassCount, 0, "no immediate pass on a failed grant")
+    }
+
+    /// R13/U8: re-trusting an app that was re-signed under a NEW Team ID replaces the stale trust
+    /// record and clears its suspended signal, so the warning fully resolves.
+    func testReTrustReplacesStaleRecordAndClearsSuspension() throws {
+        verifier.teamIDsByPid = [555: "OLDTEAM000"]
+        try handler.trustClient(pid: 555, label: "packet-extension-mac")
+        signals.setSuspended("OLDTEAM000", true)            // app updated → old trust suspended
+
+        // Same dialer, now signed by a new team; user re-trusts from the new candidate row.
+        verifier.teamIDsByPid = [556: "NEWTEAM999"]
+        try handler.trustClient(pid: 556, label: "packet-extension-mac")
+
+        let trusted = store.load().trustedClients
+        XCTAssertEqual(trusted.map(\.teamID), ["NEWTEAM999"], "stale record replaced, not duplicated")
+        XCTAssertFalse(signals.isSuspended("OLDTEAM000"), "stale suspension cleared")
+        XCTAssertEqual(signals.suspendedCount, 0)
     }
 
     /// Untrust removes the client; already-approved servers stay (removal is per-server).

@@ -143,6 +143,45 @@ final class AutoApproverTests: XCTestCase {
         XCTAssertTrue(signals.paused, "pause signal raised for the UI")
     }
 
+    /// R13/U8: when the trusted app's dialer process verifies to a DIFFERENT signed Team ID (app
+    /// updated / re-signed), its trust is suspended (visible signal) and nothing is auto-approved
+    /// under the old trust — instead of silently never approving again.
+    func testSignatureChangeSuspendsTrust() throws {
+        try saveState(trusted: [trusted()])                 // trusted under OLD team 2XZUN9L63Z
+        verifier.teamIDsByPid = [555: "NEWTEAM999"]         // same dialer now signed by a new team
+        candidates.list = [Candidate(processName: dialer, address: "91.240.86.16", port: 443, pid: 555)]
+
+        let approved = makeApprover().tick()
+        XCTAssertTrue(approved.isEmpty, "the new team is not trusted → nothing auto-approved")
+        XCTAssertEqual(signals.suspendedCount, 1, "old trust is suspended for the UI banner")
+        XCTAssertTrue(signals.isSuspended(trustedTeamID))
+    }
+
+    /// A healthy verification (dialer still signed by the trusted team) clears a prior suspension.
+    func testHealthyVerificationClearsSuspension() throws {
+        try saveState(trusted: [trusted()])
+        signals.setSuspended(trustedTeamID, true)           // pretend a prior tick suspended it
+        verifier.teamIDsByPid = [555: trustedTeamID]
+        candidates.list = [Candidate(processName: dialer, address: "91.240.86.16", port: 443, pid: 555)]
+
+        _ = makeApprover().tick()
+        XCTAssertFalse(signals.isSuspended(trustedTeamID), "healthy signature clears the suspension")
+        XCTAssertEqual(signals.suspendedCount, 0)
+    }
+
+    /// The rate-cap pause and the signature-suspended state are independent signals.
+    func testPauseAndSuspendAreDistinct() throws {
+        try saveState(trusted: [trusted()])
+        signals.setSuspended("SOMEOTHER", true)             // a suspension from elsewhere
+        verifier.teamIDsByPid = [555: trustedTeamID]
+        candidates.list = (1...3).map {
+            Candidate(processName: dialer, address: "91.240.86.\($0)", port: 443, pid: 555)
+        }
+        _ = makeApprover(maxPerHour: 1).tick()
+        XCTAssertTrue(signals.paused, "rate cap raised the pause signal")
+        XCTAssertEqual(signals.suspendedCount, 1, "the unrelated suspension is untouched by the pause")
+    }
+
     /// No trusted clients → no work and no signature checks at all.
     func testNoTrustedClientsMeansNoWork() throws {
         try saveState(trusted: [])

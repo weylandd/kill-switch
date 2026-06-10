@@ -118,13 +118,30 @@ public final class AutoApprover {
         for candidate in pending {
             guard !candidate.isIPv6,                                   // IPv6 never (R5)
                   PFRulesetManager.isValidIPv4(candidate.address),
-                  !allowed.contains(candidate.address),
-                  !excluded.contains(candidate.address),               // respect a prior removal (R9)
-                  !approved.contains(candidate.address),
                   let pid = candidate.pid else { continue }
 
             // Live signature check at the armed tick (KTD4). A gone/unsigned process returns nil.
-            guard let teamID = verifier.verifiedTeamID(forPid: Int32(pid)),
+            let teamID = verifier.verifiedTeamID(forPid: Int32(pid))
+
+            // Trust-suspended detection (R13/U8): if a process the trust record knows as a dialer now
+            // verifies to a DIFFERENT signed Team ID, the trusted app was re-signed (an update) — flag
+            // its trust as suspended so the UI warns, instead of silently never approving again. A nil
+            // result is treated as transient (process gone), not a signature change.
+            if let observed = teamID {
+                for tc in state.trustedClients where tc.processNames.contains(candidate.processName) {
+                    if observed != tc.teamID {
+                        signals.setSuspended(tc.teamID, true)
+                        log("AutoApprover: trust SUSPENDED for \(tc.label) [\(tc.teamID)] — dialer \(candidate.processName) now signed by \(observed)")
+                    } else {
+                        signals.setSuspended(tc.teamID, false)   // healthy again
+                    }
+                }
+            }
+
+            guard !allowed.contains(candidate.address),
+                  !excluded.contains(candidate.address),               // respect a prior removal (R9)
+                  !approved.contains(candidate.address) else { continue }
+            guard let teamID = teamID,
                   let client = state.trustedClients.first(where: { $0.teamID == teamID }) else { continue }
 
             // Only connections from a dialing process the trust record knows (KTD6/ADV-2): a vendor's
