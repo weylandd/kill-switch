@@ -72,7 +72,7 @@ autoApprover.start()
 let handler = CommandHandler(store: store, pf: pf, candidates: observer,
                              sessionDisarm: sessionDisarm, verifier: verifier,
                              signals: autoApprovalSignals, lock: pfLock,
-                             onTrustGranted: { autoApprover.tick() }, log: journal)
+                             onTrustGranted: { autoApprover.requestImmediatePass() }, log: journal)
 let xpc = XPCService(handler: handler)
 xpc.resume()
 
@@ -92,9 +92,13 @@ sigterm.setEventHandler {
     // watchdog could re-load our rules in the window between clear and exit, stranding the user.
     watchdog.stop()
     autoApprover.stop()
-    pfLock.lock()
+    // Take the shared lock so any in-flight op finishes first — but NEVER let a wedged holder block
+    // the OFF path. clearOurAnchor is idempotent and safety-critical, so if the lock can't be had
+    // within a short bound, clear anyway: a stranded user with no internet is worse than a rare
+    // double-clear (the kill-switch's whole reason to exist is that OFF always works).
+    let gotLock = pfLock.lock(before: Date().addingTimeInterval(2))
     try? pf.clearOurAnchor()
-    pfLock.unlock()
+    if gotLock { pfLock.unlock() }
     FileHandle.standardError.write(Data("[\(KillSwitchConfig.daemonLabel)] SIGTERM — cleared our anchor, exiting\n".utf8))
     exit(EXIT_SUCCESS)
 }

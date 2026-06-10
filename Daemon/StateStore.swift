@@ -82,7 +82,14 @@ public final class StateStore {
             let data = try Data(contentsOf: fileURL)
             return try Self.decoder.decode(PersistedState.self, from: data)
         } catch {
-            log("State store unreadable or corrupt (\(error.localizedDescription)) — falling back to defaults")
+            // Falling back to defaults silently re-blocks the internet (empty whitelist) on the next
+            // reload — the exact incident this project guards against. Preserve the original file
+            // first so a wipe is recoverable, not silent and permanent (review finding). Best-effort:
+            // a backup failure must not stop the daemon from coming up.
+            let backup = fileURL.appendingPathExtension("corrupt")
+            try? FileManager.default.removeItem(at: backup)
+            try? FileManager.default.copyItem(at: fileURL, to: backup)
+            log("State store unreadable or corrupt (\(error.localizedDescription)) — backed up to \(backup.lastPathComponent), falling back to defaults")
             return .defaults
         }
     }

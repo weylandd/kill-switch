@@ -60,6 +60,12 @@ public final class AutoApprover {
     /// a threat), and avoids persisting yet another state.json field.
     private var recentApprovals: [String: [Date]] = [:]
     private let maxApprovalsPerHour: Int
+    /// A candidate's pid is only acted on when its socket was seen this recently — so the pid still
+    /// names the LIVE process that owns the connection. A pid captured when a SYN_SENT socket briefly
+    /// appeared and then retained in the buffer can be recycled by the OS to an unrelated process; a
+    /// freshness gate prevents both a false "trust suspended" and a misattributed auto-approval from a
+    /// stale pid (review finding). Generous enough to cover scan jitter (observer scans ~every 3s).
+    private let freshnessWindow: TimeInterval
 
     public init(store: StateStore,
                 pf: PFControlling,
@@ -68,6 +74,7 @@ public final class AutoApprover {
                 sessionDisarm: SessionDisarm = SessionDisarm(),
                 signals: AutoApprovalSignals = AutoApprovalSignals(),
                 maxApprovalsPerHour: Int = 10,
+                freshnessWindow: TimeInterval = 8,
                 lock: NSLock = NSLock(),
                 log: @escaping (String) -> Void = AutoApprover.defaultLog) {
         self.store = store
@@ -77,14 +84,16 @@ public final class AutoApprover {
         self.sessionDisarm = sessionDisarm
         self.signals = signals
         self.maxApprovalsPerHour = maxApprovalsPerHour
+        self.freshnessWindow = freshnessWindow
         self.lock = lock
         self.log = log
     }
 
     /// Start periodic checks. Cadence is deliberately short (KTD9) so a blocked dial — whose
     /// SYN_SENT socket lives only ~2s — is caught and approved before the client gives up; the
-    /// client's own retry then succeeds.
+    /// client's own retry then succeeds. Guarded against a double-start leaking a second timer.
     public func start(interval: TimeInterval = 1) {
+        guard timer == nil else { return }
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + interval, repeating: interval)
         t.setEventHandler { [weak self] in self?.tick() }
@@ -95,45 +104,66 @@ public final class AutoApprover {
 
     public func stop() { timer?.cancel(); timer = nil }
 
+    /// Run one pass off the timer (e.g. right after a fresh trust, SG-04) WITHOUT blocking the caller
+    /// — the pass hops onto the approver's own serial queue. Keeping it off the XPC reply thread means
+    /// a fresh-trust reply returns promptly even if a signature check is momentarily slow (review).
+    public func requestImmediatePass() {
+        queue.async { [weak self] in self?.tick() }
+    }
+
     /// One pass: approve every pending IPv4 candidate that comes from a trusted, signature-verified,
-    /// non-excluded client under its rate cap. Pure of scheduling, so it is unit-testable. Returns the
-    /// addresses approved this pass.
+    /// non-excluded, freshly-seen client under its rate cap. Pure of scheduling, so it is
+    /// unit-testable. Returns the addresses approved this pass.
+    ///
+    /// CRITICAL ordering for the OFF guarantee (review finding): the (possibly trustd-stalling) live
+    /// signature checks run with NO lock held, between two short locked phases. Holding the shared
+    /// pfLock across a hung `SecCodeCheckValidity` would freeze the watchdog AND the user's disarm/OFF
+    /// path — unacceptable for a kill-switch. So: (1) read intent under the lock; (2) verify signatures
+    /// unlocked; (3) re-take the lock, RE-CHECK armed/marker atomically with the mutation (AE6 intact),
+    /// and apply.
     @discardableResult
     public func tick(now: Date = Date()) -> [String] {
-        lock.lock(); defer { lock.unlock() }
+        // Phase 1 — snapshot intent under the lock, then release before any signature work.
+        lock.lock()
+        let snapshot = store.load()
+        let armed1 = snapshot.protectionEnabled && !sessionDisarm.isDisarmedThisSession()
+        lock.unlock()
+        guard armed1, !snapshot.trustedClients.isEmpty else { return [] }
 
-        var state = store.load()
-        // Mirror the watchdog's two guards: never act while protection is off or a break-glass
-        // marker is set (AE6, R7). The check is INSIDE the lock, atomic with the mutation below.
-        guard state.protectionEnabled, !sessionDisarm.isDisarmedThisSession() else { return [] }
-        guard !state.trustedClients.isEmpty else { return [] }
-
-        let allowed = Set(state.servers.map(\.address))
-        let excluded = Set(state.excludedAddresses)
-        // Only ever look at processes the trust records know as dialers: this scopes the (relatively
-        // expensive) signature check to those few processes instead of verifying every app that makes
-        // a public connection each tick (efficiency), and it bounds suspension detection to the same
-        // set. Empty hints: the signature check below is the real gate, not the process-name hint.
-        let trustedDialers = Set(state.trustedClients.flatMap { $0.processNames })
-        let pending = candidates.candidates(allowedServers: allowed, vpnClientHints: [], now: now)
-
-        var approved: [String] = []
+        // Phase 2 — gather candidates and run the live signature checks WITHOUT the lock. Only
+        // freshly-seen dialers of a trusted client, public IPv4, are verified (efficiency + the pid
+        // freshness gate that ties the verdict to the live socket).
+        let trustedDialers = Set(snapshot.trustedClients.flatMap { $0.processNames })
+        let allowed1 = Set(snapshot.servers.map(\.address))
+        let pending = candidates.candidates(allowedServers: allowed1, vpnClientHints: [], now: now)
+        var verdicts: [(candidate: Candidate, teamID: String?)] = []
         for candidate in pending {
             guard !candidate.isIPv6,                                   // IPv6 never (R5)
                   PFRulesetManager.isValidIPv4(candidate.address),
                   trustedDialers.contains(candidate.processName),      // a known dialer process only
+                  now.timeIntervalSince(candidate.lastSeen) <= freshnessWindow,  // live socket only
                   let pid = candidate.pid else { continue }
+            verdicts.append((candidate, verifier.verifiedTeamID(forPid: Int32(pid))))
+        }
+        guard !verdicts.isEmpty else { return [] }
 
-            // Live signature check at the armed tick (KTD4). A gone/unsigned process returns nil.
-            let teamID = verifier.verifiedTeamID(forPid: Int32(pid))
+        // Phase 3 — re-take the lock and apply. Re-load state and RE-CHECK armed/marker so the
+        // mutation is atomic with the disarm check (AE6); state may have changed during phase 2.
+        lock.lock(); defer { lock.unlock() }
+        var state = store.load()
+        guard state.protectionEnabled, !sessionDisarm.isDisarmedThisSession() else { return [] }
+        let allowed = Set(state.servers.map(\.address))
+        let excluded = Set(state.excludedAddresses)
 
+        var approved: [String] = []
+        for (candidate, teamID) in verdicts {
             // Trust-suspended detection (R13/U8): a known dialer process that now verifies to a Team
             // ID we DON'T trust means that app was re-signed (an update) — suspend the trusted
             // client(s) that listed this process, so the UI warns instead of silently never approving
-            // again. Crucially, if the observed team IS trusted, the process legitimately belongs to
-            // THAT client — clear only its suspension and leave other clients alone, so two apps that
-            // happen to share a dialer process name don't falsely suspend each other (review finding).
-            // A nil result is treated as transient (process gone), not a signature change.
+            // again. If the observed team IS trusted, the process legitimately belongs to THAT client
+            // — clear only its suspension and leave other clients alone, so two apps that share a
+            // dialer process name don't falsely suspend each other. A nil result is treated as
+            // transient (process gone), not a signature change.
             if let observed = teamID {
                 if let healthy = state.trustedClients.first(where: { $0.teamID == observed }) {
                     signals.setSuspended(healthy.teamID, false)
@@ -182,12 +212,15 @@ public final class AutoApprover {
         }
 
         // Pause reflects actual cap state — is ANY (team+process) key currently at/over its hourly
-        // limit — not "did this particular tick hit the cap". Computing it from the live window keeps
-        // the signal stable instead of flickering when an out-of-band immediate pass (a fresh trust)
-        // evaluates a different candidate set (review finding).
-        signals.paused = recentApprovals.values.contains { stamps in
-            stamps.filter { now.timeIntervalSince($0) <= 3600 }.count >= maxApprovalsPerHour
+        // limit — not "did this particular tick hit the cap". Prune fully-aged keys in the same pass
+        // so the dict can't grow unbounded across process names (review finding).
+        var anyCapped = false
+        for (key, stamps) in recentApprovals {
+            let live = stamps.filter { now.timeIntervalSince($0) <= 3600 }
+            if live.isEmpty { recentApprovals.removeValue(forKey: key) }
+            else { recentApprovals[key] = live; if live.count >= maxApprovalsPerHour { anyCapped = true } }
         }
+        signals.paused = anyCapped
         return approved
     }
 

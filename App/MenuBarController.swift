@@ -50,6 +50,14 @@ final class MenuBarController: ObservableObject {
         ensureLoginItemIfProtectionInstalled()
     }
 
+    deinit {
+        // The controller is app-lifetime today, but cancel explicitly so a future scene/ownership
+        // refactor can't strand the 2s poll loop or the transient-banner timers (review finding).
+        pollTask?.cancel()
+        confirmationTask?.cancel()
+        autoAllowNoticeTask?.cancel()
+    }
+
     /// If protection is installed (the daemon is approved), make sure THIS control app also launches
     /// at login. Without it the user can reboot into a fully-blocked network with the daemon running
     /// but no on-screen way to disarm or run the break-glass — the 2026-06-08 lockout. Self-healing

@@ -199,6 +199,22 @@ final class AutoApproverTests: XCTestCase {
         XCTAssertEqual(signals.suspendedCount, 1, "the unrelated suspension is untouched by the pause")
     }
 
+    /// Review finding: a STALE candidate (socket seen long ago, pid may have been recycled by the OS)
+    /// is neither auto-approved nor used for suspension — only freshly-seen sockets are acted on, so a
+    /// recycled pid can't fabricate a false suspension or a misattributed approval.
+    func testStaleCandidateIsIgnored() throws {
+        try saveState(trusted: [trusted()])
+        verifier.teamIDsByPid = [555: "RECYCLED99"]     // pid now belongs to some other signed app
+        let now = Date(timeIntervalSince1970: 10_000)
+        candidates.list = [Candidate(processName: dialer, address: "91.240.86.16", port: 443,
+                                     lastSeen: now.addingTimeInterval(-60), pid: 555)]  // 60s stale
+
+        let approved = makeApprover().tick(now: now)
+        XCTAssertTrue(approved.isEmpty, "a stale candidate is not auto-approved")
+        XCTAssertEqual(signals.suspendedCount, 0, "a stale (recycled) pid does not fabricate a suspension")
+        XCTAssertTrue(verifier.checkedPids.isEmpty, "the verifier isn't even consulted for a stale pid")
+    }
+
     /// No trusted clients → no work and no signature checks at all.
     func testNoTrustedClientsMeansNoWork() throws {
         try saveState(trusted: [])
