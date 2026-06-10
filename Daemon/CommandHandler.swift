@@ -13,6 +13,9 @@ public final class CommandHandler {
     private let candidates: CandidateProviding
     private let sessionDisarm: SessionDisarm
     private let verifier: SignatureVerifying
+    /// Read-only view of the auto-approver's runtime signals (rate-cap pause, suspended clients) so
+    /// the status poll can surface them to the UI (KTD10). Optional: tests omit it.
+    private let signals: AutoApprovalSignals?
     private let log: (String) -> Void
 
     /// How recently a server connection counts as "tunnel up".
@@ -33,6 +36,7 @@ public final class CommandHandler {
                 candidates: CandidateProviding,
                 sessionDisarm: SessionDisarm = SessionDisarm(),
                 verifier: SignatureVerifying = SecCodeSignatureVerifier(),
+                signals: AutoApprovalSignals? = nil,
                 tunnelActiveWindow: TimeInterval = 30,
                 lock: NSLock = NSLock(),
                 onTrustGranted: (() -> Void)? = nil,
@@ -42,6 +46,7 @@ public final class CommandHandler {
         self.candidates = candidates
         self.sessionDisarm = sessionDisarm
         self.verifier = verifier
+        self.signals = signals
         self.tunnelActiveWindow = tunnelActiveWindow
         self.lock = lock
         self.onTrustGranted = onTrustGranted
@@ -60,7 +65,9 @@ public final class CommandHandler {
                             tunnelActive: tunnelUp,
                             lanAllowed: state.lanAllowed,
                             serverCount: state.servers.count,
-                            hasNewCandidate: hasNew)
+                            hasNewCandidate: hasNew,
+                            autoApprovalPaused: signals?.paused ?? false,
+                            suspendedClientCount: signals?.suspendedCount ?? 0)
     }
 
     public func candidateList(now: Date = Date()) -> [Candidate] {

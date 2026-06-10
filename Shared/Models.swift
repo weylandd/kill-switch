@@ -90,7 +90,9 @@ public enum ProtectionState: String, Codable, Equatable {
     case daemonUnreachable     // no connection to the daemon
 }
 
-/// Snapshot of the daemon state for the UI (sent over XPC, U7).
+/// Snapshot of the daemon state for the UI (sent over XPC, U7). The auto-approval signals (paused,
+/// suspended) ride this poll-driven snapshot rather than a reverse XPC push — the app reads them on
+/// its existing 2s poll and surfaces the banners locally (KTD10).
 public struct DaemonStatus: Codable, Equatable {
     public let protectionEnabled: Bool   // is protection on (false = emergency-disarmed)
     public let pfEnabled: Bool           // is the PF firewall itself enabled in the kernel
@@ -98,15 +100,23 @@ public struct DaemonStatus: Codable, Equatable {
     public let lanAllowed: Bool          // is local-network access open
     public let serverCount: Int          // how many servers are in the whitelist
     public let hasNewCandidate: Bool     // is there a new approval request
+    /// Auto-approval is paused because a trusted client hit its hourly rate cap (R6). Optional so
+    /// older payloads decode; nil reads as "not paused".
+    public let autoApprovalPaused: Bool?
+    /// How many trusted clients are in the "signature changed — trust suspended" state (R13).
+    public let suspendedClientCount: Int?
 
     public init(protectionEnabled: Bool, pfEnabled: Bool, tunnelActive: Bool,
-                lanAllowed: Bool, serverCount: Int, hasNewCandidate: Bool) {
+                lanAllowed: Bool, serverCount: Int, hasNewCandidate: Bool,
+                autoApprovalPaused: Bool? = nil, suspendedClientCount: Int? = nil) {
         self.protectionEnabled = protectionEnabled
         self.pfEnabled = pfEnabled
         self.tunnelActive = tunnelActive
         self.lanAllowed = lanAllowed
         self.serverCount = serverCount
         self.hasNewCandidate = hasNewCandidate
+        self.autoApprovalPaused = autoApprovalPaused
+        self.suspendedClientCount = suspendedClientCount
     }
 
     /// Derived state for the icon.
@@ -114,4 +124,9 @@ public struct DaemonStatus: Codable, Equatable {
         guard protectionEnabled else { return .disarmed }
         return tunnelActive ? .protectedTunnelUp : .protectedTunnelDown
     }
+
+    /// Convenience for the UI: is auto-approval currently paused by the rate cap?
+    public var isAutoApprovalPaused: Bool { autoApprovalPaused ?? false }
+    /// Convenience for the UI: are any trusted clients suspended on a signature change?
+    public var hasSuspendedClient: Bool { (suspendedClientCount ?? 0) > 0 }
 }

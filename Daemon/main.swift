@@ -57,12 +57,22 @@ observer.start()
 // (per-tick checks), so both judge a process identically and share the verdict cache.
 let verifier = SecCodeSignatureVerifier()
 
-// Serve the menu-bar app: status, allow/remove server, protection on/off, LAN toggle (U7).
-// onTrustGranted is wired below, after the auto-approver exists, so a fresh trust runs an immediate
-// auto-approval pass (SG-04).
+// Auto-approve new servers for trusted (signature-verified) VPN clients, so a subscription client's
+// silent server rotation no longer breaks the internet (2026-06-10 incident). Shares the same
+// pfLock as the watchdog and command handler so an approval can never race a disarm/break-glass.
+let autoApprovalSignals = AutoApprovalSignals()
+let autoApprover = AutoApprover(store: store, pf: pf, candidates: observer, verifier: verifier,
+                                sessionDisarm: sessionDisarm, signals: autoApprovalSignals,
+                                lock: pfLock, log: journal)
+autoApprover.start()
+
+// Serve the menu-bar app: status, allow/remove server, protection on/off, LAN toggle (U7). A fresh
+// trust runs an immediate auto-approval pass (SG-04) so the user doesn't wait a tick; status reads
+// the auto-approval signals (rate-cap pause, suspended clients) for the UI banners (KTD10).
 let handler = CommandHandler(store: store, pf: pf, candidates: observer,
                              sessionDisarm: sessionDisarm, verifier: verifier,
-                             lock: pfLock, log: journal)
+                             signals: autoApprovalSignals, lock: pfLock,
+                             onTrustGranted: { autoApprover.tick() }, log: journal)
 let xpc = XPCService(handler: handler)
 xpc.resume()
 
@@ -81,6 +91,7 @@ sigterm.setEventHandler {
     // (correct: only a deliberate user disarm should hold across the session). Without (1)+(2) the
     // watchdog could re-load our rules in the window between clear and exit, stranding the user.
     watchdog.stop()
+    autoApprover.stop()
     pfLock.lock()
     try? pf.clearOurAnchor()
     pfLock.unlock()
