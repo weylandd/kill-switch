@@ -24,15 +24,17 @@ public final class SecCodeSignatureVerifier: SignatureVerifying {
     private let lock = NSLock()
     private var cache: [String: String?] = [:]   // "(pid).(pidversion)" -> Team ID, or nil = untrusted
 
-    /// Developer-ID requirement (Apple TN3127 form): Apple-anchored chain with the Developer-ID
-    /// intermediate (OID 1.2.840.113635.100.6.2.6) and Developer-ID leaf (OID 1.2.840.113635.100.6.1.13).
-    /// We deliberately do NOT pin a Team ID here — this verifier READS the team id of whatever is
-    /// validly Developer-ID-signed. Ad-hoc, platform, and App-Store-re-signed binaries fail this and
-    /// return nil (correct: we only auto-trust real Developer-ID vendors like the VPN client).
-    private static let developerIDRequirement =
-        "anchor apple generic"
-        + " and certificate 1[field.1.2.840.113635.100.6.2.6] exists"
-        + " and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
+    /// Validity requirement: signed by a chain rooted at an Apple CA (`anchor apple generic`). We do
+    /// NOT pin a cert TYPE or a Team ID here — this verifier READS the team id of whatever is validly
+    /// Apple-anchored, and the caller decides which team to trust. `anchor apple generic` deliberately
+    /// accepts ALL legitimate third-party signing types — Developer ID, Mac App Store, AND
+    /// "Apple iPhone OS Application Signing" (iOS apps run on Apple Silicon Macs, which is how the
+    /// real VPN client on the test machine is signed — a strict Developer-ID requirement rejected it,
+    /// caught in live verification 2026-06-10). Security is unaffected: ad-hoc/unsigned binaries fail
+    /// `anchor apple generic`, Apple's own platform binaries carry no Team ID (rejected by the
+    /// non-empty-team check below), and a Team ID cannot be forged — so auto-approval still requires a
+    /// match to a team the user explicitly trusted.
+    private static let appleAnchoredRequirement = "anchor apple generic"
 
     public init() {}
 
@@ -84,7 +86,7 @@ public final class SecCodeSignatureVerifier: SignatureVerifying {
               let liveCode = code else { return nil }
 
         var requirement: SecRequirement?
-        guard SecRequirementCreateWithString(developerIDRequirement as CFString, [], &requirement) == errSecSuccess,
+        guard SecRequirementCreateWithString(appleAnchoredRequirement as CFString, [], &requirement) == errSecSuccess,
               let req = requirement else { return nil }
 
         // Validate the LIVE signature against the requirement. No network revocation checks on the
