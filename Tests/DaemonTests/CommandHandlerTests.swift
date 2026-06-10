@@ -246,6 +246,24 @@ final class CommandHandlerTrustTests: XCTestCase {
         XCTAssertEqual(signals.suspendedCount, 0)
     }
 
+    /// Review finding: re-trusting must persist the stale-record removal EVEN WHEN the new team is
+    /// already trusted and the dialer name is already recorded — otherwise the dead entry reloads.
+    func testReTrustPersistsStaleRemovalWhenTeamAlreadyTrusted() throws {
+        // Seed both a stale (OLD) and the current (NEW) record, both listing dialer "P".
+        try store.save(PersistedState(trustedClients: [
+            TrustedClient(teamID: "OLDTEAM000", label: "P", processNames: ["P"]),
+            TrustedClient(teamID: "NEWTEAM999", label: "P", processNames: ["P"]),
+        ]))
+        signals.setSuspended("OLDTEAM000", true)
+        verifier.teamIDsByPid = [556: "NEWTEAM999"]      // NEW already trusted, "P" already present
+
+        try handler.trustClient(pid: 556, label: "P")
+
+        let reloaded = StateStore(directory: tempDir).load().trustedClients   // fresh load = persisted
+        XCTAssertEqual(reloaded.map(\.teamID), ["NEWTEAM999"], "stale OLD removed AND persisted to disk")
+        XCTAssertFalse(signals.isSuspended("OLDTEAM000"), "stale suspension cleared")
+    }
+
     /// Untrust removes the client; already-approved servers stay (removal is per-server).
     func testUntrustClientRemovesOnlyTheTrustEntry() throws {
         verifier.teamIDsByPid = [555: "2XZUN9L63Z"]

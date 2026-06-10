@@ -38,6 +38,10 @@ final class MenuBarController: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var confirmationTask: Task<Void, Never>?
     private var autoAllowNoticeTask: Task<Void, Never>?
+    /// True once the server list has been fetched at least once, so the initial load (which fills the
+    /// list from the daemon's persisted state) doesn't fire "auto-approved" notices for pre-existing
+    /// servers — while a genuinely-empty first list still lets the first post-trust batch be announced.
+    private var hasLoadedServersOnce = false
 
     init() {
         // Start polling at construction (the controller lives for the whole app), so the menu-bar
@@ -83,14 +87,18 @@ final class MenuBarController: ObservableObject {
 
     func refresh() async {
         let s = await client.fetchStatus()
-        status = s
-        // Only pull lists when the daemon answered; otherwise keep the last-known view.
+        if s != status { status = s }
+        // Only pull lists when the daemon answered; otherwise keep the last-known view. Each list is
+        // reassigned only when it actually changed, so a steady 2s poll doesn't republish identical
+        // data and needlessly invalidate the UI (e.g. disturb focus in the manual-address field).
         if s != nil {
-            candidates = await client.fetchCandidates()
+            let freshCandidates = await client.fetchCandidates()
+            if freshCandidates != candidates { candidates = freshCandidates }
             let fresh = await client.fetchServers()
             announceAutoApprovals(old: servers, new: fresh)
-            servers = fresh
-            trustedClients = await client.fetchTrustedClients()
+            if fresh != servers { servers = fresh }
+            let freshTrusted = await client.fetchTrustedClients()
+            if freshTrusted != trustedClients { trustedClients = freshTrusted }
         }
     }
 
@@ -98,7 +106,10 @@ final class MenuBarController: ObservableObject {
     /// must be noticeable, not silent (R8/DL-004). A rotation burst that adds several servers in one
     /// poll window produces ONE "added N" notice rather than a flurry of banners.
     private func announceAutoApprovals(old: [ServerRule], new: [ServerRule]) {
-        guard !old.isEmpty else { return }   // first load — nothing to diff against
+        // Suppress only the very first fetch of the app's lifetime (it loads pre-existing servers);
+        // after that, an empty `old` is a real state we want to diff against — that's exactly the
+        // fresh-install "trust → first auto-approval" case the notice must not miss (review finding).
+        guard hasLoadedServersOnce else { hasLoadedServersOnce = true; return }
         let known = Set(old.map(\.address))
         let added = new.filter { $0.effectiveOrigin == .auto && !known.contains($0.address) }
         guard !added.isEmpty else { return }

@@ -157,6 +157,23 @@ final class AutoApproverTests: XCTestCase {
         XCTAssertTrue(signals.isSuspended(trustedTeamID))
     }
 
+    /// Two trusted apps that happen to share a dialer process name must not suspend each other: a
+    /// legitimate dial from app A (signed by team A, which IS trusted) leaves app B untouched.
+    func testSharedDialerNameDoesNotFalselySuspendOtherClient() throws {
+        let teamA = "AAAAAAAAAA", teamB = "BBBBBBBBBB", shared = "packet-extension-mac"
+        try saveState(trusted: [
+            TrustedClient(teamID: teamA, label: "AppA", processNames: [shared]),
+            TrustedClient(teamID: teamB, label: "AppB", processNames: [shared]),
+        ])
+        verifier.teamIDsByPid = [555: teamA]            // A's process dials legitimately
+        candidates.list = [Candidate(processName: shared, address: "1.2.3.4", port: 443, pid: 555)]
+
+        let approved = makeApprover().tick()
+        XCTAssertFalse(signals.isSuspended(teamB), "A's legit dial must not suspend B (shared name)")
+        XCTAssertFalse(signals.isSuspended(teamA))
+        XCTAssertEqual(approved, ["1.2.3.4"], "A's server is still auto-approved")
+    }
+
     /// A healthy verification (dialer still signed by the trusted team) clears a prior suspension.
     func testHealthyVerificationClearsSuspension() throws {
         try saveState(trusted: [trusted()])

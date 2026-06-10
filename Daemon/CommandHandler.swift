@@ -122,13 +122,21 @@ public final class CommandHandler {
             throw TrustError.signatureNotVerifiable
         }
         var state = store.load()
+        var changed = false
+
         // If the same app was previously trusted under a DIFFERENT Team ID (it was re-signed — the
-        // "trust suspended" case, R13/U8), drop the stale record and clear its suspended signal, so
-        // re-trusting fully resolves the warning rather than leaving a dead entry behind.
-        let stale = state.trustedClients.filter { $0.teamID != teamID && $0.processNames.contains(label) }
-        for old in stale { signals?.setSuspended(old.teamID, false) }
-        state.trustedClients.removeAll { $0.teamID != teamID && $0.processNames.contains(label) }
+        // "trust suspended" case, R13/U8), drop the stale record(s) and clear their suspended signal,
+        // so re-trusting fully resolves the warning rather than leaving a dead entry behind. This must
+        // persist even when the new team is already trusted (review finding: the removal was lost).
+        let staleTeams = state.trustedClients
+            .filter { $0.teamID != teamID && $0.processNames.contains(label) }.map(\.teamID)
+        if !staleTeams.isEmpty {
+            state.trustedClients.removeAll { staleTeams.contains($0.teamID) }
+            for old in staleTeams { signals?.setSuspended(old, false) }
+            changed = true
+        }
         signals?.setSuspended(teamID, false)
+
         if let idx = state.trustedClients.firstIndex(where: { $0.teamID == teamID }) {
             // Already trusted — just make sure this dialing process name is recorded (for the
             // per-(team, process) rate cap, KTD6).
@@ -137,12 +145,13 @@ public final class CommandHandler {
                 state.trustedClients[idx] = TrustedClient(teamID: existing.teamID, label: existing.label,
                                                           processNames: existing.processNames + [label],
                                                           addedAt: existing.addedAt)
-                try store.save(state)
+                changed = true
             }
         } else {
             state.trustedClients.append(TrustedClient(teamID: teamID, label: label, processNames: [label]))
-            try store.save(state)
+            changed = true
         }
+        if changed { try store.save(state) }
         log("trusted client \(label) [\(teamID)] — its new servers will be auto-allowed")
 
         unlock()                 // release BEFORE the trigger: the auto-approver takes the same lock

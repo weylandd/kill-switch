@@ -110,30 +110,37 @@ public final class AutoApprover {
 
         let allowed = Set(state.servers.map(\.address))
         let excluded = Set(state.excludedAddresses)
-        // Empty hints: the signature check below is the real gate, not the process-name hint.
+        // Only ever look at processes the trust records know as dialers: this scopes the (relatively
+        // expensive) signature check to those few processes instead of verifying every app that makes
+        // a public connection each tick (efficiency), and it bounds suspension detection to the same
+        // set. Empty hints: the signature check below is the real gate, not the process-name hint.
+        let trustedDialers = Set(state.trustedClients.flatMap { $0.processNames })
         let pending = candidates.candidates(allowedServers: allowed, vpnClientHints: [], now: now)
 
         var approved: [String] = []
-        var cappedThisTick = false
         for candidate in pending {
             guard !candidate.isIPv6,                                   // IPv6 never (R5)
                   PFRulesetManager.isValidIPv4(candidate.address),
+                  trustedDialers.contains(candidate.processName),      // a known dialer process only
                   let pid = candidate.pid else { continue }
 
             // Live signature check at the armed tick (KTD4). A gone/unsigned process returns nil.
             let teamID = verifier.verifiedTeamID(forPid: Int32(pid))
 
-            // Trust-suspended detection (R13/U8): if a process the trust record knows as a dialer now
-            // verifies to a DIFFERENT signed Team ID, the trusted app was re-signed (an update) — flag
-            // its trust as suspended so the UI warns, instead of silently never approving again. A nil
-            // result is treated as transient (process gone), not a signature change.
+            // Trust-suspended detection (R13/U8): a known dialer process that now verifies to a Team
+            // ID we DON'T trust means that app was re-signed (an update) — suspend the trusted
+            // client(s) that listed this process, so the UI warns instead of silently never approving
+            // again. Crucially, if the observed team IS trusted, the process legitimately belongs to
+            // THAT client — clear only its suspension and leave other clients alone, so two apps that
+            // happen to share a dialer process name don't falsely suspend each other (review finding).
+            // A nil result is treated as transient (process gone), not a signature change.
             if let observed = teamID {
-                for tc in state.trustedClients where tc.processNames.contains(candidate.processName) {
-                    if observed != tc.teamID {
+                if let healthy = state.trustedClients.first(where: { $0.teamID == observed }) {
+                    signals.setSuspended(healthy.teamID, false)
+                } else {
+                    for tc in state.trustedClients where tc.processNames.contains(candidate.processName) {
                         signals.setSuspended(tc.teamID, true)
                         log("AutoApprover: trust SUSPENDED for \(tc.label) [\(tc.teamID)] — dialer \(candidate.processName) now signed by \(observed)")
-                    } else {
-                        signals.setSuspended(tc.teamID, false)   // healthy again
                     }
                 }
             }
@@ -142,15 +149,13 @@ public final class AutoApprover {
                   !excluded.contains(candidate.address),               // respect a prior removal (R9)
                   !approved.contains(candidate.address) else { continue }
             guard let teamID = teamID,
-                  let client = state.trustedClients.first(where: { $0.teamID == teamID }) else { continue }
-
-            // Only connections from a dialing process the trust record knows (KTD6/ADV-2): a vendor's
-            // GUI process (different name, same Team ID) must not consume the relay extension's cap.
-            guard client.processNames.isEmpty || client.processNames.contains(candidate.processName) else { continue }
+                  let client = state.trustedClients.first(where: { $0.teamID == teamID }),
+                  // The dialer must be one THIS client knows (KTD6/ADV-2) — a vendor's GUI process
+                  // (different name, same Team ID) must not consume the relay extension's cap.
+                  client.processNames.contains(candidate.processName) else { continue }
 
             let capKey = "\(teamID)|\(candidate.processName)"
             guard withinRateLimit(capKey, now: now) else {
-                cappedThisTick = true
                 log("AutoApprover: rate cap reached for \(capKey) — NOT approving \(candidate.address); approve manually if legitimate")
                 continue
             }
@@ -176,7 +181,13 @@ public final class AutoApprover {
             log("auto-allowed \(candidate.address):\(candidate.port) for trusted client \(client.label) [\(teamID)]")
         }
 
-        signals.paused = cappedThisTick
+        // Pause reflects actual cap state — is ANY (team+process) key currently at/over its hourly
+        // limit — not "did this particular tick hit the cap". Computing it from the live window keeps
+        // the signal stable instead of flickering when an out-of-band immediate pass (a fresh trust)
+        // evaluates a different candidate set (review finding).
+        signals.paused = recentApprovals.values.contains { stamps in
+            stamps.filter { now.timeIntervalSince($0) <= 3600 }.count >= maxApprovalsPerHour
+        }
         return approved
     }
 
