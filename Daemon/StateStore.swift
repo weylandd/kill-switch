@@ -8,15 +8,39 @@ public struct PersistedState: Codable, Equatable {
     public var protectionEnabled: Bool
     public var lanAllowed: Bool
     public var clients: [String]          // configurable list of VPN clients (R20)
+    /// Apps trusted (by code-signing Team ID) to get their servers whitelisted automatically.
+    public var trustedClients: [TrustedClient]
+    /// Addresses the user removed from the whitelist — excluded from future auto-approval so a
+    /// deliberate removal is never silently undone by automation (R9). Manual re-approval clears it.
+    public var excludedAddresses: [String]
 
     public init(servers: [ServerRule] = [],
                 protectionEnabled: Bool = true,
                 lanAllowed: Bool = false,
-                clients: [String] = []) {
+                clients: [String] = [],
+                trustedClients: [TrustedClient] = [],
+                excludedAddresses: [String] = []) {
         self.servers = servers
         self.protectionEnabled = protectionEnabled
         self.lanAllowed = lanAllowed
         self.clients = clients
+        self.trustedClients = trustedClients
+        self.excludedAddresses = excludedAddresses
+    }
+
+    /// Custom decoding so a state.json written BEFORE the trusted-client fields existed still loads.
+    /// CRITICAL (KTD5): a missing new key must NOT throw — that would make StateStore.load() fall
+    /// back to .defaults and silently WIPE the server whitelist (the exact incident class this
+    /// feature fixes). decodeIfPresent defaults every new/optional field; the pre-feature required
+    /// keys are decoded strictly so genuine corruption still surfaces.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        servers = try c.decode([ServerRule].self, forKey: .servers)
+        protectionEnabled = try c.decode(Bool.self, forKey: .protectionEnabled)
+        lanAllowed = try c.decode(Bool.self, forKey: .lanAllowed)
+        clients = try c.decodeIfPresent([String].self, forKey: .clients) ?? []
+        trustedClients = try c.decodeIfPresent([TrustedClient].self, forKey: .trustedClients) ?? []
+        excludedAddresses = try c.decodeIfPresent([String].self, forKey: .excludedAddresses) ?? []
     }
 
     /// Defaults: protection on, local network closed, no servers.

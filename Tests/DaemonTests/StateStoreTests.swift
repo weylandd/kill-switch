@@ -34,6 +34,47 @@ final class StateStoreTests: XCTestCase {
         XCTAssertEqual(loaded, state)
     }
 
+    /// KTD5 (critical): a state.json written BEFORE the trusted-client fields existed must still
+    /// decode — a throw here would dump the whole state (servers included!) back to .defaults via
+    /// the corrupt-file fallback, silently wiping the whitelist.
+    func testLegacyStateFileWithoutNewFieldsStillLoads() throws {
+        let legacyJSON = """
+        {
+          "clients" : [],
+          "lanAllowed" : false,
+          "protectionEnabled" : true,
+          "servers" : [
+            { "addedAt" : "2026-06-08T00:00:00Z", "address" : "89.106.86.61", "label" : "v2RayTun", "port" : 443 }
+          ]
+        }
+        """
+        try Data(legacyJSON.utf8).write(to: tempDir.appendingPathComponent("state.json"))
+
+        let loaded = StateStore(directory: tempDir, log: { _ in }).load()
+        XCTAssertEqual(loaded.servers.map(\.address), ["89.106.86.61"], "legacy servers survive — not wiped")
+        XCTAssertTrue(loaded.protectionEnabled)
+        XCTAssertTrue(loaded.trustedClients.isEmpty, "missing key decodes as empty, not as corrupt")
+        XCTAssertTrue(loaded.excludedAddresses.isEmpty)
+        XCTAssertEqual(loaded.servers.first?.effectiveOrigin, .manual, "missing origin reads as manual")
+    }
+
+    /// Round-trip of the new fields: trusted clients, exclusions, and an auto-origin server survive.
+    func testNewFieldsRoundTrip() throws {
+        let state = PersistedState(
+            servers: [ServerRule(address: "91.240.86.16", port: 443, label: "v2RayTun", origin: .auto)],
+            protectionEnabled: true,
+            trustedClients: [TrustedClient(teamID: "2XZUN9L63Z", label: "v2RayTun",
+                                           processNames: ["packet-extension-mac"])],
+            excludedAddresses: ["66.90.91.194"]
+        )
+        try StateStore(directory: tempDir).save(state)
+        let loaded = StateStore(directory: tempDir).load()
+        XCTAssertEqual(loaded, state)
+        XCTAssertEqual(loaded.servers.first?.effectiveOrigin, .auto)
+        XCTAssertEqual(loaded.trustedClients.first?.teamID, "2XZUN9L63Z")
+        XCTAssertEqual(loaded.excludedAddresses, ["66.90.91.194"])
+    }
+
     /// edge: a missing store falls back to safe defaults.
     func testMissingStoreReturnsSafeDefaults() {
         let loaded = StateStore(directory: tempDir).load()

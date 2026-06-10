@@ -89,7 +89,7 @@ public final class LibprocSocketScanner: SocketScanning {
         guard let remoteAddr = remote, !Self.isUnspecified(remoteAddr) else { return nil }
 
         return ConnectionSample(processName: name, address: remoteAddr, port: port,
-                                localAddress: local, isIPv6: isIPv6, seenAt: now)
+                                localAddress: local, isIPv6: isIPv6, seenAt: now, pid: pid)
     }
 
     // MARK: - Helpers

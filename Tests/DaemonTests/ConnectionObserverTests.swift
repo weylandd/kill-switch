@@ -122,6 +122,18 @@ final class ConnectionObserverTests: XCTestCase {
                        "loopback self-talk dropped; only the real direct attempt survives")
     }
 
+    /// The candidate carries the attempting process's pid — the daemon needs it to verify the
+    /// app's code signature for the trusted-client flow (U5).
+    func testCandidateCarriesPid() {
+        let scanner = FakeScanner()
+        scanner.samples = [ConnectionSample(processName: "PacketTunnel", address: "91.240.86.16",
+                                            port: 443, localAddress: "192.168.1.10", pid: 18842)]
+        let obs = makeObserver(scanner: scanner, inspector: FakeInspector())
+
+        obs.refresh()
+        XCTAssertEqual(obs.candidates(allowedServers: [], vpnClientHints: []).first?.pid, 18842)
+    }
+
     /// A blocked IPv6 attempt is surfaced as a diagnostic candidate (can't be allowed, but visible
     /// so an IPv6-only server doesn't just look dead).
     func testIPv6AttemptSurfacedAsDiagnostic() {

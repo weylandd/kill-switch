@@ -1,5 +1,13 @@
 import Foundation
 
+/// How a server entered the whitelist: a manual user approval, or an automatic approval for a
+/// trusted client (origin = auto). Drives the "added automatically" marker (R8) and lets the UI
+/// tell the two apart. Codable raw value so it round-trips in state.json.
+public enum ServerOrigin: String, Codable, Equatable {
+    case manual
+    case auto
+}
+
 /// An allowed VPN server: a single /32 address, a label for display, and the date added.
 /// "Allow" in the UI means adding such an entry (KTD4 — we allow an address, not an app).
 public struct ServerRule: Codable, Equatable, Identifiable {
@@ -8,13 +16,42 @@ public struct ServerRule: Codable, Equatable, Identifiable {
     public let port: Int?               // destination port — for the row label only, optional
     public let label: String            // client app name, shown to the user
     public let addedAt: Date
+    /// Manual vs automatic. Optional so state files written before this field existed still decode
+    /// (a missing value reads as `manual`, the safe pre-feature default).
+    public let origin: ServerOrigin?
 
-    public init(address: String, port: Int? = nil, label: String, addedAt: Date = Date()) {
+    public init(address: String, port: Int? = nil, label: String, addedAt: Date = Date(),
+                origin: ServerOrigin? = nil) {
         self.address = address
         self.port = port
         self.label = label
         // Second precision: the store writes the date as ISO8601 without fractional seconds,
         // so normalize here to make save/load round-trip identical.
+        self.addedAt = Date(timeIntervalSince1970: addedAt.timeIntervalSince1970.rounded(.towardZero))
+        self.origin = origin
+    }
+
+    /// Effective origin for display/logic — a missing value is a pre-feature manual entry.
+    public var effectiveOrigin: ServerOrigin { origin ?? .manual }
+}
+
+/// A VPN client app the user trusts to receive server approvals automatically (the 2026-06-10
+/// auto-approval feature). Trust is anchored in the app's code-signing Team ID — the daemon verifies
+/// it against the live process — so a rogue process can imitate a NAME but not a signed Team ID.
+public struct TrustedClient: Codable, Equatable, Identifiable {
+    public var id: String { teamID }
+    public let teamID: String              // Apple code-signing Team ID, e.g. "2XZUN9L63Z"
+    public let label: String               // human-readable app name, e.g. "v2RayTun"
+    /// Process names seen dialing for this Team ID (e.g. "packet-extension-mac"). The rate cap and
+    /// auto-approval key on (teamID + dialing process name) so a vendor's GUI noise can't starve the
+    /// extension's relay rotation (KTD6).
+    public let processNames: [String]
+    public let addedAt: Date
+
+    public init(teamID: String, label: String, processNames: [String] = [], addedAt: Date = Date()) {
+        self.teamID = teamID
+        self.label = label
+        self.processNames = processNames
         self.addedAt = Date(timeIntervalSince1970: addedAt.timeIntervalSince1970.rounded(.towardZero))
     }
 }
@@ -28,13 +65,18 @@ public struct Candidate: Codable, Equatable, Identifiable {
     public let lastSeen: Date
     /// IPv6 is fully blocked and can never be allowed — shown as a diagnostic candidate.
     public let isIPv6: Bool
+    /// PID of the process that made the attempt — lets the daemon verify the live process's code
+    /// signature when the user taps "trust this app". Optional: older payloads decode without it.
+    public let pid: Int?
 
-    public init(processName: String, address: String, port: Int, lastSeen: Date = Date(), isIPv6: Bool = false) {
+    public init(processName: String, address: String, port: Int, lastSeen: Date = Date(),
+                isIPv6: Bool = false, pid: Int? = nil) {
         self.processName = processName
         self.address = address
         self.port = port
         self.lastSeen = lastSeen
         self.isIPv6 = isIPv6
+        self.pid = pid
     }
 }
 
