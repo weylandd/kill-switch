@@ -73,6 +73,31 @@ final class CommandHandlerTests: XCTestCase {
         XCTAssertTrue(pf.ops.contains(.remove("89.106.86.61")))
     }
 
+    /// U7/R9: removing a server (any origin) excludes its address from future auto-approval, so a
+    /// deliberate removal is never silently undone by automation.
+    func testRemoveServerExcludesAddress() throws {
+        try handler.allowServer(address: "91.240.86.16", label: "v2RayTun", port: 443, origin: .auto)
+        try handler.removeServer(address: "91.240.86.16")
+        XCTAssertEqual(store.load().excludedAddresses, ["91.240.86.16"])
+
+        // A manually-added server, removed, is also excluded (automation never re-adds it).
+        try handler.allowServer(address: "5.5.5.5", label: "manual", port: 0)   // origin defaults to .manual
+        try handler.removeServer(address: "5.5.5.5")
+        XCTAssertTrue(store.load().excludedAddresses.contains("5.5.5.5"))
+    }
+
+    /// U7/R9: a MANUAL re-approval of an excluded address clears its exclusion (the user changed
+    /// their mind); an AUTO allow would not (but the auto-approver never reaches an excluded one).
+    func testManualAllowClearsExclusion() throws {
+        try handler.allowServer(address: "91.240.86.16", label: "v2RayTun", port: 443)
+        try handler.removeServer(address: "91.240.86.16")
+        XCTAssertEqual(store.load().excludedAddresses, ["91.240.86.16"], "removed → excluded")
+
+        try handler.allowServer(address: "91.240.86.16", label: "v2RayTun", port: 443)   // manual re-allow
+        XCTAssertTrue(store.load().excludedAddresses.isEmpty, "manual re-approval clears the exclusion")
+        XCTAssertEqual(store.load().servers.map(\.address), ["91.240.86.16"])
+    }
+
     /// Covers AE3/AE4: disarm flushes ONLY our anchor and releases our reference — never a global
     /// reset — and persists the disarmed flag, so a watchdog tick or app reconnect sees a consistent
     /// "off" and never re-blocks.

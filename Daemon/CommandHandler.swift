@@ -147,28 +147,46 @@ public final class CommandHandler {
 
     // MARK: - Mutations
 
-    /// Allow a server: persist the rule, then add its /32 to the live table. Idempotent.
-    public func allowServer(address: String, label: String, port: Int) throws {
+    /// Allow a server: persist the rule, then add its /32 to the live table. Idempotent. The single
+    /// locked path shared by the manual XPC command (origin `.manual`) and the auto-approver (origin
+    /// `.auto`), so both serialize against the watchdog/disarm (KTD3). A MANUAL allow also clears any
+    /// exclusion on the address — the user is deliberately re-approving it, which overrides a prior
+    /// removal (R9, U7). An AUTO allow never clears an exclusion (the auto-approver already skips
+    /// excluded addresses).
+    public func allowServer(address: String, label: String, port: Int,
+                            origin: ServerOrigin = .manual) throws {
         lock.lock(); defer { lock.unlock() }
         guard PFRulesetManager.isValidIPv4(address) else { throw PFError.invalidAddress(address) }
 
         var state = store.load()
+        var changed = false
         if !state.servers.contains(where: { $0.address == address }) {
-            state.servers.append(ServerRule(address: address, port: port > 0 ? port : nil, label: label))
-            try store.save(state)            // persist first
+            state.servers.append(ServerRule(address: address, port: port > 0 ? port : nil,
+                                            label: label, origin: origin))
+            changed = true
         }
-        try pf.addServer(address)            // then update the kernel table
-        log("allowed \(address) (\(label))")
+        if origin == .manual, let idx = state.excludedAddresses.firstIndex(of: address) {
+            state.excludedAddresses.remove(at: idx)   // user re-approving clears the exclusion
+            changed = true
+        }
+        if changed { try store.save(state) }          // persist first
+        try pf.addServer(address)                      // then update the kernel table
+        log("\(origin == .auto ? "auto-allowed" : "allowed") \(address) (\(label))")
     }
 
-    /// Remove a server: drop the rule, then remove it from the live table.
+    /// Remove a server: drop the rule, then remove it from the live table. The address is added to
+    /// the exclusion list so the auto-approver never silently re-adds it — a deliberate user removal
+    /// is respected regardless of how the server was added (R9, U7). Manual re-approval clears it.
     public func removeServer(address: String) throws {
         lock.lock(); defer { lock.unlock() }
         var state = store.load()
         state.servers.removeAll { $0.address == address }
+        if !state.excludedAddresses.contains(address) {
+            state.excludedAddresses.append(address)
+        }
         try store.save(state)                // persist first
         try pf.removeServer(address)         // then update the kernel table
-        log("removed \(address)")
+        log("removed \(address) (excluded from auto-approval)")
     }
 
     /// Enable protection, or disarm it for the rest of this boot session.
