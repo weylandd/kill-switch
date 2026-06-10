@@ -21,7 +21,9 @@ struct ServersListView: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(server.label).font(.callout)
-                            Text(server.address).font(.caption).foregroundStyle(.secondary)
+                            Text(server.effectiveOrigin == .auto ? "\(server.address) · добавлен автоматически"
+                                                                 : server.address)
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
                         Button(role: .destructive) { onRemove(server) } label: {

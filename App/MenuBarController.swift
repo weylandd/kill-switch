@@ -10,6 +10,7 @@ final class MenuBarController: ObservableObject {
     @Published var status: DaemonStatus?
     @Published var candidates: [Candidate] = []
     @Published var servers: [ServerRule] = []
+    @Published var trustedClients: [TrustedClient] = []
     @Published var manualAddress: String = ""
     @Published var manualError: String?
     @Published var lastError: String?
@@ -17,14 +18,26 @@ final class MenuBarController: ObservableObject {
     /// no-op (R33). Distinct from the steady disarmed icon/toggle: it confirms the action just worked
     /// and the internet should be back. Auto-clears after a few seconds.
     @Published var offConfirmation: String?
+    /// Transient notice when the daemon auto-allowed one or more servers for a trusted client, so the
+    /// automation is never silent (R8). Coalesced across a rotation burst. Auto-clears.
+    @Published var autoAllowNotice: String?
+    /// A candidate awaiting trust confirmation — drives the "Доверять приложению X?" dialog so the
+    /// scope of the action (auto-approve this app's future servers) is explicit (DL-001).
+    @Published var pendingTrustCandidate: Candidate?
     /// True while the privileged emergency OFF is running (its admin-password dialog is up).
     @Published var isEmergencyRunning = false
     /// True while a manual "retry connection" is in flight, so the button can show feedback.
     @Published var isCheckingConnection = false
 
+    /// Auto-approval is paused on the rate cap (R6) — surfaced from the status poll (KTD10).
+    var isAutoApprovalPaused: Bool { status?.isAutoApprovalPaused ?? false }
+    /// A trusted app's signature changed and its trust is suspended (R13) — from the status poll.
+    var hasSuspendedClient: Bool { status?.hasSuspendedClient ?? false }
+
     private let client = XPCClient()
     private var pollTask: Task<Void, Never>?
     private var confirmationTask: Task<Void, Never>?
+    private var autoAllowNoticeTask: Task<Void, Never>?
 
     init() {
         // Start polling at construction (the controller lives for the whole app), so the menu-bar
@@ -74,7 +87,29 @@ final class MenuBarController: ObservableObject {
         // Only pull lists when the daemon answered; otherwise keep the last-known view.
         if s != nil {
             candidates = await client.fetchCandidates()
-            servers = await client.fetchServers()
+            let fresh = await client.fetchServers()
+            announceAutoApprovals(old: servers, new: fresh)
+            servers = fresh
+            trustedClients = await client.fetchTrustedClients()
+        }
+    }
+
+    /// Show a transient, coalesced notice when auto-approved servers appear between polls — automation
+    /// must be noticeable, not silent (R8/DL-004). A rotation burst that adds several servers in one
+    /// poll window produces ONE "added N" notice rather than a flurry of banners.
+    private func announceAutoApprovals(old: [ServerRule], new: [ServerRule]) {
+        guard !old.isEmpty else { return }   // first load — nothing to diff against
+        let known = Set(old.map(\.address))
+        let added = new.filter { $0.effectiveOrigin == .auto && !known.contains($0.address) }
+        guard !added.isEmpty else { return }
+        autoAllowNotice = added.count == 1
+            ? "Авто-разрешён новый сервер VPN: \(added[0].address)"
+            : "Авто-разрешено новых серверов VPN: \(added.count)"
+        autoAllowNoticeTask?.cancel()
+        autoAllowNoticeTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.autoAllowNotice = nil
         }
     }
 
@@ -168,6 +203,35 @@ final class MenuBarController: ObservableObject {
     func remove(_ server: ServerRule) {
         Task {
             let (ok, err) = await client.removeServer(address: server.address)
+            if !ok { lastError = err }
+            await refresh()
+        }
+    }
+
+    /// Step 1 of trusting an app: stash the candidate so the view can show a confirmation dialog
+    /// naming the scope ("its future servers will be allowed automatically") before we commit.
+    func requestTrust(_ candidate: Candidate) {
+        guard candidate.pid != nil else { return }   // no pid → can't verify the process
+        pendingTrustCandidate = candidate
+    }
+
+    func cancelTrust() { pendingTrustCandidate = nil }
+
+    /// Step 2: the user confirmed. The daemon verifies the LIVE process signature and enrols its
+    /// Team ID; from then on its new servers are auto-approved.
+    func confirmTrust() {
+        guard let candidate = pendingTrustCandidate, let pid = candidate.pid else { return }
+        pendingTrustCandidate = nil
+        Task {
+            let (ok, err) = await client.trustClient(pid: pid, label: candidate.processName)
+            if !ok { lastError = err }
+            await refresh()
+        }
+    }
+
+    func untrust(_ trusted: TrustedClient) {
+        Task {
+            let (ok, err) = await client.untrustClient(teamID: trusted.teamID)
             if !ok { lastError = err }
             await refresh()
         }

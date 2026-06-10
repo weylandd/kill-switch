@@ -45,9 +45,15 @@ struct DetailsWindow: View {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Серверы и запросы").font(.title3).bold()
 
-                Text("Когда VPN-клиент пытается выйти на новый сервер напрямую, он появляется здесь. Разрешите свой сервер — остальное останется заблокированным.")
+                Text("Когда VPN-клиент пытается выйти на новый сервер напрямую, он появляется здесь. Разрешите один сервер — или доверьте приложению, чтобы его новые серверы добавлялись сами.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                PermissionRequestsView(candidates: controller.candidates, onAllow: controller.allow)
+                PermissionRequestsView(candidates: controller.candidates,
+                                       onAllow: controller.allow,
+                                       onTrust: controller.requestTrust)
+
+                Divider()
+
+                TrustedClientsView(clients: controller.trustedClients, onUntrust: controller.untrust)
 
                 Divider()
 
@@ -59,7 +65,19 @@ struct DetailsWindow: View {
             }
             .padding(16)
         }
-        .frame(width: 420, height: 520)
+        .frame(width: 420, height: 560)
+        // Confirm the scope of trust before committing — "Доверять" is broader than "Разрешить".
+        .confirmationDialog("Доверять приложению?",
+                            isPresented: Binding(get: { controller.pendingTrustCandidate != nil },
+                                                 set: { if !$0 { controller.cancelTrust() } }),
+                            titleVisibility: .visible) {
+            Button("Доверять") { controller.confirmTrust() }
+            Button("Отмена", role: .cancel) { controller.cancelTrust() }
+        } message: {
+            if let c = controller.pendingTrustCandidate {
+                Text("Новые серверы приложения «\(c.processName)» будут разрешаться автоматически. Подпись приложения проверяется.")
+            }
+        }
     }
 }
 
@@ -68,6 +86,7 @@ struct DetailsWindow: View {
 struct PermissionRequestsView: View {
     let candidates: [Candidate]
     let onAllow: (Candidate) -> Void
+    let onTrust: (Candidate) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -91,9 +110,47 @@ struct PermissionRequestsView: View {
                         Spacer()
                         if candidate.canAllow {
                             Button("Разрешить") { onAllow(candidate) }
+                                .help("Разрешить только этот один сервер.")
+                            if candidate.pid != nil {
+                                Button("Доверять приложению") { onTrust(candidate) }
+                                    .help("Разрешать новые серверы этого приложения автоматически. Подпись приложения проверяется.")
+                            }
                         } else {
                             Text("IPv6").font(.caption).foregroundStyle(.secondary)
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Apps trusted to get their new servers auto-approved (signature-verified by the daemon). We show a
+/// plain "подтверждённый разработчик" line rather than the raw Team ID, which is meaningless to a
+/// non-technical user (DL-002) — the Team ID is available only as a secondary detail.
+struct TrustedClientsView: View {
+    let clients: [TrustedClient]
+    let onUntrust: (TrustedClient) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Доверенные приложения").font(.subheadline).bold()
+
+            if clients.isEmpty {
+                Text("Нет доверенных приложений. Нажмите «Доверять приложению» у запроса выше — и новые серверы этого VPN-клиента будут добавляться сами.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(clients) { client in
+                    HStack(alignment: .firstTextBaseline) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(client.label).font(.callout)
+                            Text("подтверждённый разработчик · серверы добавляются автоматически")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Не доверять") { onUntrust(client) }
                     }
                 }
             }

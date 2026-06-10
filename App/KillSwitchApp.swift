@@ -29,6 +29,7 @@ struct KillSwitchApp: App {
 /// controls, but always shows the status header so the user is never left guessing.
 struct ControlPanelView: View {
     @ObservedObject var controller: MenuBarController
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -41,6 +42,28 @@ struct ControlPanelView: View {
                 Label(confirmation, systemImage: "checkmark.circle.fill")
                     .font(.caption).foregroundStyle(.green)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+
+            // Auto-approval signals, in priority order (DL-004): a suspended trust is the loudest
+            // (it can recreate the original silent outage), then the rate-cap pause, then the
+            // transient "added a server" confirmation.
+            if controller.hasSuspendedClient {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Доверие приостановлено — подпись приложения изменилась.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    Button("Подтвердить заново") {
+                        openWindow(id: AppWindow.details)
+                        NSApp.activate(ignoringOtherApps: true)
+                    }
+                    .font(.caption)
+                }
+            } else if controller.isAutoApprovalPaused {
+                Label("Автодобавление серверов приостановлено — слишком много новых серверов за час. Нужный сервер можно разрешить вручную.",
+                      systemImage: "pause.circle.fill")
+                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            } else if let notice = controller.autoAllowNotice {
+                Label(notice, systemImage: "checkmark.seal.fill")
+                    .font(.caption).foregroundStyle(.blue).fixedSize(horizontal: false, vertical: true)
             }
 
             Divider()
