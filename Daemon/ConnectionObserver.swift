@@ -14,17 +14,14 @@ public struct ConnectionSample: Equatable {
     public var seenAt: Date
     /// PID of the owning process — used to verify its code signature for the trusted-client flow.
     /// NOT part of `key`: a relaunched client gets a new pid but is the same logical connection, and
-    /// keying on pid would multiply rows on every client restart.
+    /// keying on pid would multiply rows on every client restart. The signature is verified LIVE from
+    /// this pid at the moment it matters (trust grant in U5, auto-approval tick in U6) rather than
+    /// stamped here — so the check is always "is this process trustworthy right now, while armed".
     public let pid: Int32?
-    /// The process's verified code-signing Team ID, set by the observer when the sample is one that
-    /// could be auto-approved (public IPv4) and a live signature check succeeded on an armed tick.
-    /// Empty/nil means "not verified" → never auto-approved (fail-closed). Mutable so the observer
-    /// can re-confirm it on a later scan (KTD9). Excluded from `key` for the same reason as pid.
-    public var verifiedTeamID: String?
 
     public init(processName: String, address: String, port: Int,
                 localAddress: String? = nil, isIPv6: Bool = false, seenAt: Date = Date(),
-                pid: Int32? = nil, verifiedTeamID: String? = nil) {
+                pid: Int32? = nil) {
         self.processName = processName
         self.address = address
         self.port = port
@@ -32,11 +29,10 @@ public struct ConnectionSample: Equatable {
         self.isIPv6 = isIPv6
         self.seenAt = seenAt
         self.pid = pid
-        self.verifiedTeamID = verifiedTeamID
     }
 
     /// Identity of a connection across scans (same process to the same endpoint). Deliberately
-    /// excludes pid and verifiedTeamID so a client restart or a re-verification doesn't fork the row.
+    /// excludes pid so a client restart doesn't fork the row.
     var key: String { "\(processName)|\(address)|\(port)|\(isIPv6)" }
 }
 
