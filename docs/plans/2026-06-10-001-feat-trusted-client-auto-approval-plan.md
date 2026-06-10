@@ -1,7 +1,7 @@
 ---
 title: "feat: Авто-разрешение серверов для доверенных VPN-клиентов"
 type: feat
-status: active
+status: completed
 date: 2026-06-10
 origin: docs/brainstorms/2026-06-10-trusted-client-auto-approval-requirements.md
 ---
