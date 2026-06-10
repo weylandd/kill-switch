@@ -53,9 +53,16 @@ watchdog.start()
 // Watch for direct outbound attempts so the app can offer new servers for approval (U6).
 observer.start()
 
+// One signature verifier shared by the command handler ("trust this app") and the auto-approver
+// (per-tick checks), so both judge a process identically and share the verdict cache.
+let verifier = SecCodeSignatureVerifier()
+
 // Serve the menu-bar app: status, allow/remove server, protection on/off, LAN toggle (U7).
+// onTrustGranted is wired below, after the auto-approver exists, so a fresh trust runs an immediate
+// auto-approval pass (SG-04).
 let handler = CommandHandler(store: store, pf: pf, candidates: observer,
-                             sessionDisarm: sessionDisarm, lock: pfLock, log: journal)
+                             sessionDisarm: sessionDisarm, verifier: verifier,
+                             lock: pfLock, log: journal)
 let xpc = XPCService(handler: handler)
 xpc.resume()
 

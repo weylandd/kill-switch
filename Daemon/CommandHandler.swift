@@ -12,6 +12,7 @@ public final class CommandHandler {
     private let pf: PFControlling
     private let candidates: CandidateProviding
     private let sessionDisarm: SessionDisarm
+    private let verifier: SignatureVerifying
     private let log: (String) -> Void
 
     /// How recently a server connection counts as "tunnel up".
@@ -22,19 +23,28 @@ public final class CommandHandler {
     // turned it off (it read the old "enabled" state just before the disarm landed).
     private let lock: NSLock
 
+    /// Called once, OUTSIDE the lock, right after a trust grant — wired in main.swift to run an
+    /// immediate auto-approval pass so a freshly-trusted client's pending servers are allowed without
+    /// waiting for the next timer tick (SG-04). Optional so tests don't need the auto-approver.
+    private let onTrustGranted: (() -> Void)?
+
     public init(store: StateStore,
                 pf: PFControlling,
                 candidates: CandidateProviding,
                 sessionDisarm: SessionDisarm = SessionDisarm(),
+                verifier: SignatureVerifying = SecCodeSignatureVerifier(),
                 tunnelActiveWindow: TimeInterval = 30,
                 lock: NSLock = NSLock(),
+                onTrustGranted: (() -> Void)? = nil,
                 log: @escaping (String) -> Void = CommandHandler.defaultLog) {
         self.store = store
         self.pf = pf
         self.candidates = candidates
         self.sessionDisarm = sessionDisarm
+        self.verifier = verifier
         self.tunnelActiveWindow = tunnelActiveWindow
         self.lock = lock
+        self.onTrustGranted = onTrustGranted
         self.log = log
     }
 
@@ -68,6 +78,71 @@ public final class CommandHandler {
 
     public func serverList() -> [ServerRule] {
         store.load().servers
+    }
+
+    public func trustedClientList() -> [TrustedClient] {
+        store.load().trustedClients
+    }
+
+    // MARK: - Trust (auto-approval enrolment)
+
+    /// Errors specific to the trust flow, with user-presentable (Russian) descriptions — these reach
+    /// the app verbatim over XPC and are shown to the user.
+    public enum TrustError: Error, CustomStringConvertible {
+        case signatureNotVerifiable
+
+        public var description: String {
+            switch self {
+            case .signatureNotVerifiable:
+                return "Не удалось подтвердить приложение. Откройте VPN-приложение и попробуйте снова."
+            }
+        }
+    }
+
+    /// Trust the APP behind a candidate, by the LIVE process's verified Developer-ID Team ID. From
+    /// then on the auto-approver whitelists that app's new servers automatically. The pid comes from
+    /// the candidate row the user tapped; verification happens HERE in the daemon — the app's claim is
+    /// never trusted on its own. A process that already exited, or one not Developer-ID-signed, fails
+    /// with a user-facing explanation (R2, R3). Idempotent on the Team ID. After enrolling we run one
+    /// immediate auto-approval pass (SG-04) so the user doesn't stare at a still-broken connection.
+    public func trustClient(pid: Int, label: String) throws {
+        lock.lock()
+        var didUnlock = false
+        func unlock() { if !didUnlock { didUnlock = true; lock.unlock() } }
+        defer { unlock() }
+
+        guard let teamID = verifier.verifiedTeamID(forPid: Int32(pid)) else {
+            throw TrustError.signatureNotVerifiable
+        }
+        var state = store.load()
+        if let idx = state.trustedClients.firstIndex(where: { $0.teamID == teamID }) {
+            // Already trusted — just make sure this dialing process name is recorded (for the
+            // per-(team, process) rate cap, KTD6).
+            if !state.trustedClients[idx].processNames.contains(label) {
+                let existing = state.trustedClients[idx]
+                state.trustedClients[idx] = TrustedClient(teamID: existing.teamID, label: existing.label,
+                                                          processNames: existing.processNames + [label],
+                                                          addedAt: existing.addedAt)
+                try store.save(state)
+            }
+        } else {
+            state.trustedClients.append(TrustedClient(teamID: teamID, label: label, processNames: [label]))
+            try store.save(state)
+        }
+        log("trusted client \(label) [\(teamID)] — its new servers will be auto-allowed")
+
+        unlock()                 // release BEFORE the trigger: the auto-approver takes the same lock
+        onTrustGranted?()        // immediate pass for already-pending candidates (SG-04)
+    }
+
+    /// Stop auto-approving for a client (by Team ID). Already-approved servers stay (remove them
+    /// individually). R10.
+    public func untrustClient(teamID: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        var state = store.load()
+        state.trustedClients.removeAll { $0.teamID == teamID }
+        try store.save(state)
+        log("untrusted client [\(teamID)]")
     }
 
     // MARK: - Mutations

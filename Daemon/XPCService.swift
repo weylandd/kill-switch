@@ -64,6 +64,18 @@ final class ExportedDaemon: NSObject, KillSwitchDaemonProtocol {
         run(reply) { try self.handler.setLANAccess(allowed: allowed) }
     }
 
+    func fetchTrustedClients(reply: @escaping (Data?) -> Void) {
+        reply(try? encoder.encode(handler.trustedClientList()))
+    }
+
+    func trustClient(pid: Int, label: String, reply: @escaping (Bool, String?) -> Void) {
+        run(reply) { try self.handler.trustClient(pid: pid, label: label) }
+    }
+
+    func untrustClient(teamID: String, reply: @escaping (Bool, String?) -> Void) {
+        run(reply) { try self.handler.untrustClient(teamID: teamID) }
+    }
+
     /// Run a throwing command and map the outcome to the (success, errorText) reply shape.
     private func run(_ reply: (Bool, String?) -> Void, _ body: () throws -> Void) {
         do { try body(); reply(true, nil) }

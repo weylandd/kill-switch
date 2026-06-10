@@ -147,3 +147,69 @@ final class CommandHandlerTests: XCTestCase {
         XCTAssertTrue(pf.ops.contains(.load), "LAN change reloads the ruleset to add the <lan> pass")
     }
 }
+
+/// Trust-command coverage (U5) — uses a fake signature verifier so the live SecCode path is bypassed.
+final class CommandHandlerTrustTests: XCTestCase {
+    private var tempDir: URL!
+    private var store: StateStore!
+    private var pf: FakePF!
+    private var verifier: FakeSignatureVerifier!
+    private var handler: CommandHandler!
+    private var immediatePassCount = 0
+
+    override func setUpWithError() throws {
+        tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("CommandHandlerTrustTests-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        store = StateStore(directory: tempDir)
+        pf = FakePF()
+        verifier = FakeSignatureVerifier()
+        let sessionDisarm = SessionDisarm(markerURL: tempDir.appendingPathComponent("session-disarm"),
+                                          bootID: { "boot-test" }, log: { _ in })
+        handler = CommandHandler(store: store, pf: pf, candidates: FakeCandidates(),
+                                 sessionDisarm: sessionDisarm, verifier: verifier,
+                                 onTrustGranted: { [weak self] in self?.immediatePassCount += 1 },
+                                 log: { _ in })
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: tempDir)
+    }
+
+    /// Trust stores the VERIFIED Team ID (the daemon checks the live process, not the app's claim),
+    /// records the dialing process name for the per-(team, process) cap, and runs the immediate pass.
+    func testTrustClientStoresVerifiedTeamIDAndRunsImmediatePass() throws {
+        verifier.teamIDsByPid = [555: "2XZUN9L63Z"]
+        try handler.trustClient(pid: 555, label: "packet-extension-mac")
+
+        let trusted = store.load().trustedClients
+        XCTAssertEqual(trusted.map(\.teamID), ["2XZUN9L63Z"])
+        XCTAssertEqual(trusted.first?.processNames, ["packet-extension-mac"])
+        XCTAssertEqual(immediatePassCount, 1, "an immediate auto-approval pass runs after a grant (SG-04)")
+
+        // Idempotent on the Team ID.
+        try handler.trustClient(pid: 555, label: "packet-extension-mac")
+        XCTAssertEqual(store.load().trustedClients.count, 1)
+    }
+
+    /// A process that can't be verified (gone / not Developer-ID-signed) cannot be trusted — the
+    /// request fails with a user-facing message and nothing is stored.
+    func testTrustClientRejectsUnverifiableProcess() {
+        XCTAssertThrowsError(try handler.trustClient(pid: 999, label: "impostor")) { error in
+            XCTAssertTrue("\(error)".contains("попробуйте снова"), "user-facing explanation")
+        }
+        XCTAssertTrue(store.load().trustedClients.isEmpty)
+        XCTAssertEqual(immediatePassCount, 0, "no immediate pass on a failed grant")
+    }
+
+    /// Untrust removes the client; already-approved servers stay (removal is per-server).
+    func testUntrustClientRemovesOnlyTheTrustEntry() throws {
+        verifier.teamIDsByPid = [555: "2XZUN9L63Z"]
+        try handler.trustClient(pid: 555, label: "packet-extension-mac")
+        try handler.allowServer(address: "91.240.86.16", label: "v2RayTun", port: 443)
+
+        try handler.untrustClient(teamID: "2XZUN9L63Z")
+        XCTAssertTrue(store.load().trustedClients.isEmpty)
+        XCTAssertEqual(store.load().servers.count, 1, "approved servers are not revoked by untrust")
+    }
+}

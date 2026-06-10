@@ -44,6 +44,19 @@ public final class XPCClient {
         await withResult { proxy, reply in proxy.setLANAccess(allowed: allowed, reply: reply) }
     }
 
+    public func fetchTrustedClients() async -> [TrustedClient] {
+        let data = await withData { proxy, reply in proxy.fetchTrustedClients(reply: reply) }
+        return data.flatMap { try? decoder.decode([TrustedClient].self, from: $0) } ?? []
+    }
+
+    public func trustClient(pid: Int, label: String) async -> (Bool, String?) {
+        await withResult { proxy, reply in proxy.trustClient(pid: pid, label: label, reply: reply) }
+    }
+
+    public func untrustClient(teamID: String) async -> (Bool, String?) {
+        await withResult { proxy, reply in proxy.untrustClient(teamID: teamID, reply: reply) }
+    }
+
     // MARK: - Connection
 
     private func proxy(errorHandler: @escaping (Error) -> Void) -> KillSwitchDaemonProtocol? {

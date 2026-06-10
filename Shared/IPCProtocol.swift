@@ -27,4 +27,14 @@ import Foundation
 
     /// Open or close local-network access.
     func setLANAccess(allowed: Bool, reply: @escaping (Bool, String?) -> Void)
+
+    /// Trusted client apps (auto-approval by code signature). reply: JSON `[TrustedClient]`, or nil.
+    func fetchTrustedClients(reply: @escaping (Data?) -> Void)
+
+    /// Trust the app behind a candidate: the daemon verifies the LIVE process signature for `pid`
+    /// and stores its Team ID. From then on that app's new servers are allowed automatically.
+    func trustClient(pid: Int, label: String, reply: @escaping (Bool, String?) -> Void)
+
+    /// Stop auto-approving for a client (by Team ID). Already-allowed servers stay.
+    func untrustClient(teamID: String, reply: @escaping (Bool, String?) -> Void)
 }
