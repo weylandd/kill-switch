@@ -39,6 +39,18 @@ final class ConnectionObserverTests: XCTestCase {
                        "unknown source -> treated as direct, so it is still surfaced")
     }
 
+    /// R12/KTD8: loopback (::1, 127/8) and link-local (fe80::/10) are never candidates.
+    func testLoopbackAndLinkLocalClassification() {
+        XCTAssertTrue(AddressRules.isLoopbackOrLinkLocal("::1"), "IPv6 loopback")
+        XCTAssertTrue(AddressRules.isLoopbackOrLinkLocal("127.0.0.1"), "IPv4 loopback")
+        XCTAssertTrue(AddressRules.isLoopbackOrLinkLocal("127.255.0.7"), "whole 127/8 is loopback")
+        XCTAssertTrue(AddressRules.isLoopbackOrLinkLocal("fe80::1c2d"), "IPv6 link-local")
+        XCTAssertTrue(AddressRules.isLoopbackOrLinkLocal("FE80::ABCD"), "case-insensitive")
+        XCTAssertFalse(AddressRules.isLoopbackOrLinkLocal("89.106.86.61"), "a real server is not loopback")
+        XCTAssertFalse(AddressRules.isLoopbackOrLinkLocal("2606:4700::1111"), "public IPv6 is not loopback")
+        XCTAssertFalse(AddressRules.isLoopbackOrLinkLocal("169.254.1.1"), "IPv4 link-local is not in this set (handled by isPublicUnicastIPv4)")
+    }
+
     // MARK: - Observer filtering (refresh + keep rules)
 
     private func makeObserver(scanner: FakeScanner, inspector: FakeInspector) -> ConnectionObserver {
@@ -86,6 +98,28 @@ final class ConnectionObserverTests: XCTestCase {
         obs.refresh()
         let candidates = obs.candidates(allowedServers: [], vpnClientHints: ["v2ray"])
         XCTAssertEqual(candidates.map(\.address), ["89.106.86.61"], "only the direct public attempt survives")
+    }
+
+    /// Covers AE5: loopback self-talk (the ::1 flood) never becomes a candidate, while a real
+    /// direct public attempt in the same scan survives.
+    func testLoopbackTrafficNeverBecomesCandidate() {
+        let scanner = FakeScanner()
+        scanner.samples = [
+            ConnectionSample(processName: "packet-extension-mac", address: "::1", port: 49813,
+                             localAddress: "::1", isIPv6: true),
+            ConnectionSample(processName: "packet-extension-mac", address: "::1", port: 51200,
+                             localAddress: "::1", isIPv6: true),   // different ephemeral port = used to be a new row
+            ConnectionSample(processName: "127.0.0.1-talker", address: "127.0.0.1", port: 1080,
+                             localAddress: "127.0.0.1"),
+            ConnectionSample(processName: "PacketTunnel", address: "91.240.86.16", port: 443,
+                             localAddress: "192.168.1.10"),
+        ]
+        let obs = makeObserver(scanner: scanner, inspector: FakeInspector())
+
+        obs.refresh()
+        let candidates = obs.candidates(allowedServers: [], vpnClientHints: [])
+        XCTAssertEqual(candidates.map(\.address), ["91.240.86.16"],
+                       "loopback self-talk dropped; only the real direct attempt survives")
     }
 
     /// A blocked IPv6 attempt is surfaced as a diagnostic candidate (can't be allowed, but visible

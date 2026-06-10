@@ -59,6 +59,21 @@ public enum AddressRules {
         guard let local = localAddress else { return false }
         return tunnelLocalAddresses.contains(local)
     }
+
+    /// A loopback or link-local destination — a process talking to itself or to the local segment,
+    /// never a VPN server and never able to leak the real IP. Surfacing these once flooded the
+    /// approval list with ~1700 rows: a tun2socks client dials `::1:<ephemeral>` for its local SOCKS
+    /// hop, and every new ephemeral port made a "new" candidate (2026-06-10 incident). Covers IPv4
+    /// loopback `127.0.0.0/8` (already excluded for IPv4 servers by `isPublicUnicastIPv4`, kept here
+    /// as the single source of truth) and IPv6 loopback `::1` + link-local `fe80::/10`.
+    public static func isLoopbackOrLinkLocal(_ s: String) -> Bool {
+        let lower = s.lowercased()
+        if lower == "::1" { return true }                    // IPv6 loopback
+        if lower.hasPrefix("fe8") || lower.hasPrefix("fe9")  // fe80::/10 link-local
+            || lower.hasPrefix("fea") || lower.hasPrefix("feb") { return true }
+        let parts = s.split(separator: ".")                  // IPv4 loopback 127/8
+        return parts.count == 4 && parts[0] == "127"
+    }
 }
 
 /// Source of raw socket samples. Behind a protocol so the observer can be tested with a fake.
@@ -167,6 +182,9 @@ public final class ConnectionObserver: CandidateProviding {
     // MARK: - Pure logic
 
     private func keep(_ s: ConnectionSample, tunnels: Set<String>) -> Bool {
+        // Loopback / link-local self-talk is never a server and never a leak — drop before the
+        // IPv6-diagnostic branch below, which would otherwise let `::1` through and flood the list.
+        if AddressRules.isLoopbackOrLinkLocal(s.address) { return false }
         if AddressRules.isInTunnel(localAddress: s.localAddress, tunnelLocalAddresses: tunnels) {
             return false
         }
