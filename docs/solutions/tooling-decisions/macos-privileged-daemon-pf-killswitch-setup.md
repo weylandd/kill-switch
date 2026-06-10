@@ -161,6 +161,15 @@ read which rules actually matched: a `pass` rule with 0 packets means it isn't m
 pflog, create the interface first: `ifconfig pflog0 create`.) Verify safely with a time-boxed script
 that auto-restores the internet on exit (`trap cleanup EXIT`).
 
+Two sibling techniques from the 2026-06-10 endpoint-rotation incident (full writeup:
+`docs/solutions/integration-issues/vpn-endpoint-rotation-pf-whitelist-blocks-new-connections.md`):
+**`pfctl -s info` state counts** — with an all-`no state` ruleset, `State Table: 0 entries / 0
+inserts` proves PF cannot be treating established and new connections differently, so any
+old-works/new-fails asymmetry lives ABOVE the firewall (the VPN app's relay layer). And **don't
+trust "Connected" through a TUN device** — tun2socks/NE tunnels terminate TCP locally, so curl's
+"Connected to host" only proves the SYN reached the tunnel; "Connection closed by <remote-ip>" can
+be the tunnel's own upstream dial timing out.
+
 ## Strategic validation & cross-project findings (2026-06-08 deep research)
 
 After the runtime fixes, we cross-checked the whole approach against the field (Mullvad's
@@ -346,3 +355,5 @@ uninstall, and survives reboot). Run `launchctl enable system/<label>` before `b
 - Deferred review items / real-machine checks: `docs/review-followups-stage-a.md`,
   `docs/review-followups-stage-bcd.md`
 - Verification helper: `scripts/ks-diagnose.sh` (time-boxed, auto-restoring)
+- Endpoint-rotation incident (subscription VPN pool vs static whitelist; state-table diagnostic):
+  `docs/solutions/integration-issues/vpn-endpoint-rotation-pf-whitelist-blocks-new-connections.md`
